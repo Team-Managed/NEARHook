@@ -180,7 +180,14 @@ flowchart TD
         SETTLE --> NORM --> SIGN
     end
 
-    subgraph S5["5. Delivery Targets (Who Receives It)"]
+    subgraph S5["5. Durable Storage & Developer Dashboard"]
+        direction TB
+        PG[("PostgreSQL / NeonDB<br/>• Durable JSONB event archive<br/>• Subscriptions & delivery history")]
+        DASH["Developer Web Dashboard<br/>• Live DAG Visualizer (Inspect receipt hops)<br/>• 1-Click Free Replay (No gas needed)<br/>• Circuit breaker & health analytics"]
+        PG <--> DASH
+    end
+
+    subgraph S6["6. Live Delivery Targets (Consumers)"]
         direction LR
         subgraph T1["Target A: Cloud Webhooks"]
             WH["HTTPS POST Webhook<br/>(Exponential retry + circuit breaker)"] --> CLD["Cloud Backends<br/>Next.js • FastAPI • AWS Lambda"]
@@ -196,14 +203,19 @@ flowchart TD
     S1 ==>|"Block Chunks"| FN
     FILTER -- "Subscribed Match" --> DAG
     CHECK -- "Settled (Remaining = 0)" --> SETTLE
-    SIGN ==>|"Attested Webhook Payload"| S5
+    SIGN ==>|"Save JSONB Tree"| PG
+    SIGN ==>|"Attested Webhook Payload"| S6
+    DASH -.->|"Trigger Replay"| S6
 
     style S1 fill:#111827,stroke:#00EC97,stroke-width:1px,color:#fff
     style S2 fill:#111827,stroke:#F59E0B,stroke-width:1px,color:#fff
     style S3 fill:#0B0F17,stroke:#9945FF,stroke-width:2px,color:#fff
     style S4 fill:#111827,stroke:#3B82F6,stroke-width:1px,color:#fff
-    style S5 fill:#0B0F17,stroke:#00EC97,stroke-width:2px,color:#fff
+    style S5 fill:#111827,stroke:#EC4899,stroke-width:2px,color:#fff
+    style S6 fill:#0B0F17,stroke:#00EC97,stroke-width:2px,color:#fff
     style DAG fill:#1F2937,stroke:#A855F7,stroke-width:1px,color:#fff
+    style PG fill:#1F2937,stroke:#EC4899,stroke-width:1px,color:#fff
+    style DASH fill:#1F2937,stroke:#F43F5E,stroke-width:1px,color:#fff
     style T1 fill:#111827,stroke:#3B82F6,stroke-width:1px,color:#fff
     style T2 fill:#111827,stroke:#F59E0B,stroke-width:1px,color:#fff
     style T3 fill:#111827,stroke:#10B981,stroke-width:1px,color:#fff
