@@ -94,7 +94,45 @@ sequenceDiagram
 
 ---
 
-## 3. How NearHook Stitches Receipts & Detects Refunds
+## 3. Why Can't You Just Use NEAR Lake or FastNEAR Directly?
+
+A common question is: *"If NEAR Lake and FastNEAR already exist, why can't developers just consume them directly?"*
+
+Here is why:
+
+### 1. Smart Contracts Cannot Send Webhooks
+Smart contracts execute inside a WebAssembly (Wasm) sandbox on validator nodes. They are strictly prohibited from opening outbound TCP sockets, making HTTP POST requests, or calling external APIs. The blockchain cannot push events to you—an off-chain bridge must ingest and deliver them.
+
+### 2. Why Not NEAR Lake?
+* **High Latency:** NEAR Lake writes block files to **AWS S3 buckets**. Polling S3 introduces a **1.5 to 3+ second delay** after block inclusion.
+* **Heavyweight & Expensive:** Consuming NEAR Lake requires AWS credentials, S3 SDKs, and running a persistent Rust/Python container parsing every block on the network. This costs **$50–$200+/month** in cloud compute—unviable for developers who just need a simple webhook for their own contract.
+* **No Optimistic Blocks:** NEAR Lake only archives finalized blocks.
+
+### 3. Why Not FastNEAR Directly?
+FastNEAR provides an ultra-low latency HTTP API (`/v0/block_opt/{height}`). NearHook uses FastNEAR internally for this reason. But consuming FastNEAR directly as an application developer presents major hurdles:
+
+* **Raw Network Dump (Not a Webhook):** FastNEAR is a pull-based query API, not an event-push service. Querying a block returns a **massive 2MB–5MB JSON dump of every transaction, receipt, and execution across all shards on the entire network**. You would have to write custom code to filter out 99.9% of irrelevant data.
+* **FastNEAR Does NOT Stitch Receipts:** FastNEAR gives you a raw snapshot of what happened in Block 101. It will **not** correlate that Block 101's receipt spawns a promise in Block 102, panics in Block 103, and refunds in Block 104. If you use FastNEAR directly, **you must build your own distributed receipt tracker and state machine in Redis/PostgreSQL**.
+* **Pull vs. Push (Scale-to-Zero):** Serverless backends (Vercel, AWS Lambda) and autonomous AI agents need to sleep at **$0 idle cost** and wake up for 50ms when an HTTP `POST` arrives. They cannot run a continuous 24/7 `while(true)` polling loop against FastNEAR without burning continuous compute bills.
+* **Cannot Reach `localhost:3000`:** FastNEAR cannot stream events into your laptop behind Wi-Fi routers and NAT firewalls. Testing locally requires paying for and configuring ngrok or cloud proxies.
+
+```mermaid
+flowchart LR
+    NEAR["NEAR Network<br/>(Shards 0, 1, 2, 3)"] ==> FastNEAR["FastNEAR API<br/>(Raw Block Firehose)"]
+    FastNEAR ==> NearHook["NEARHOOK ENGINE<br/>• Filters your contracts<br/>• Stitches receipt graph<br/>• Verifies refunds & signs"]
+    NearHook ==> Dev["DEVELOPER / AI AGENT<br/>• Clean HTTP POST Webhook<br/>• Instant `npx nearhook listen`<br/>• $0 idle compute cost"]
+
+    style NEAR fill:#111827,stroke:#00EC97,stroke-width:1px,color:#fff
+    style FastNEAR fill:#111827,stroke:#F59E0B,stroke-width:1px,color:#fff
+    style NearHook fill:#0B0F17,stroke:#9945FF,stroke-width:2px,color:#fff
+    style Dev fill:#064E3B,stroke:#00EC97,stroke-width:2px,color:#fff
+```
+
+> **The Analogy:** FastNEAR is the **firehose of raw municipal water** (high-speed raw data for the entire network). NearHook is the **smart filtration system and kitchen tap**: it filters the noise, tracks the exact transaction you care about, ensures it wasn't refunded, signs it, and pours it straight into your server or local laptop.
+
+---
+
+## 4. How NearHook Stitches Receipts & Detects Refunds
 
 NearHook waits until the entire receipt graph finishes before dispatching:
 
@@ -119,7 +157,7 @@ When a contract callback like `ft_resolve_transfer` handles a failure and refund
 
 ---
 
-## 4. Multi-Chain Settlement in One Webhook
+## 5. Multi-Chain Settlement in One Webhook
 
 Instead of managing node providers and indexers across 35+ chains, NearHook translates NEAR's cross-chain contracts into clear, human-readable events:
 
@@ -141,7 +179,7 @@ flowchart TD
 
 ---
 
-## 5. Security: Verifying Incoming Webhooks
+## 6. Security: Verifying Incoming Webhooks
 
 NearHook secures every delivery using native Ed25519 cryptographic signatures:
 
@@ -168,7 +206,7 @@ flowchart LR
 
 ---
 
-## 6. Zero-Config Local Tunneling (`nearhook listen`)
+## 7. Zero-Config Local Tunneling (`nearhook listen`)
 
 Developers and AI engineers can develop locally without port-forwarding or paying for ngrok:
 
@@ -197,7 +235,7 @@ sequenceDiagram
 
 ---
 
-## 7. Example Webhook Payload
+## 8. Example Webhook Payload
 
 When a cross-chain swap or intent settles on NEAR, your backend or AI agent receives this clean JSON payload:
 
@@ -226,12 +264,15 @@ When a cross-chain swap or intent settles on NEAR, your backend or AI agent rece
 
 ---
 
-## 8. Summary: Why NearHook?
+## 9. Summary: FastNEAR Directly vs. With NearHook
 
-| Feature | Traditional Ingestion | With NearHook |
+| Capability | Consuming FastNEAR Directly | Consuming NearHook |
 | :--- | :--- | :--- |
-| **Cross-Shard Safety** | Naive indexers fire early and miss refunds | **Stitches all receipts** and accurately verifies settlement |
-| **Multi-Chain Coverage** | Run 35+ separate indexers for each chain | **One webhook stream** for all activity settling on NEAR |
-| **Local Development** | Pay for ngrok or configure complex tunnels | Run **`npx nearhook listen`** out of the box |
-| **Debugging** | Re-run transactions and pay gas fees to test | **1-click free replay** from durable event logs |
-| **AI Agents** | Burn compute on 24/7 continuous polling loops | **Scale-to-zero**: sleep at $0 cost and wake up on webhook |
+| **Data Format** | Raw 5MB network dump of every block | Clean, filtered JSON payload for *your* contract |
+| **Delivery Mechanism** | You must run continuous `while(true)` polling | Standard **HTTP POST Webhook** pushed to you |
+| **Receipt Stitching** | **None.** You must write code to track multi-block receipts | **Automatic.** NearHook holds dispatch until terminal settlement |
+| **Refund Detection** | You must parse raw contract callbacks manually | Webhook explicitly says `CONFIRMED` vs `REFUNDED` |
+| **Compute Cost** | Pay 24/7 for servers running continuous polling loops | **$0 idle cost.** Serverless & agents wake up only when needed |
+| **Local Dev (`localhost:3000`)**| Impossible without ngrok or custom proxies | **Built-in tunnel (`npx nearhook listen`)** |
+| **Historical Replay** | Re-run on-chain transactions and pay gas | **1-click free replay** from durable event logs |
+| **Cryptographic Security** | Raw unsigned HTTP data | Signed with **Ed25519** with replay protection |
