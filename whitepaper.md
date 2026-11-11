@@ -1,6 +1,6 @@
 # NearHook: Asynchronous Receipt Stitching & Cross-Chain Event Ingress for NEAR Protocol
 
-**Whitepaper** • Version 2.4 • November 2026  
+**Whitepaper** • Version 2.5 • November 2026  
 
 ---
 
@@ -149,11 +149,75 @@ flowchart LR
     style R3 fill:#111827,stroke:#F59E0B,stroke-width:2px,color:#fff
 ```
 
-### 1. Tracks All Related Receipts
-NearHook connects parent receipts to child calls and callbacks. It only marks a transaction ready when every child and callback has completed.
+### 1. The Completeness Rule: When is a Transaction Truly Done?
+On NEAR, you cannot predict how many receipts a transaction will generate before it runs. Receipt $R_0$ might spawn $R_1$, and only when $R_1$ executes does it spawn $R_2$.
 
-### 2. Understands Business Outcomes (Refunds vs Success)
-When a contract callback like `ft_resolve_transfer` handles a failure and refunds tokens, NearHook accurately reports the business status as `REFUNDED` instead of reporting a false success or crashing your integration.
+NearHook solves this with a simple, rock-solid rule:
+* **Spawned Receipts:** NearHook registers every child promise and callback spawned by incoming receipts.
+* **Executed Receipts:** NearHook marks receipts off as their execution outcomes arrive from shard blocks.
+* **Terminal Settlement:** A transaction is only settled when **every spawned receipt has executed** (`Remaining = Spawned − Executed = ∅`). Only then does NearHook package and sign the final webhook.
+
+### 2. The 1-Block Latency Win: Pruning "Gas Change" Receipts
+On NEAR, every smart contract call attaches extra gas (e.g. 30 TGas for a 4 TGas call). When the call finishes, the NEAR runtime automatically generates a child receipt from `"system"` to return the unspent gas back to the user's wallet.
+
+* **The Problem with Naive Indexers:** Waiting for that trivial gas refund receipt adds **1 full block of artificial latency (~1.1 seconds)** to every single transaction.
+* **NearHook's Optimization:** NearHook inspects child receipts in real time. If a child receipt is purely returning unspent gas from `"system"`, NearHook prunes it from the dependency tree immediately. Your webhook fires **1 full block faster (~1.1s latency shaved off)** without sacrificing any safety.
+
+### 3. Understanding Business Outcomes: Gas Change vs. Real Refunds
+NearHook makes a sharp distinction between two fundamentally different types of refunds:
+
+| Attribute | System Gas Refund ("Gas Change") | Business Refund (`ft_resolve_transfer`) |
+| :--- | :--- | :--- |
+| **Origin** | NEAR protocol runtime (`system`) | The calling smart contract (e.g. `usdc.near`) |
+| **Trigger** | Unspent gas from a function call | A downstream contract failed or panicked |
+| **Smart Contract Logic** | None (pure balance transfer) | Yes (reverses token balances and logs refund) |
+| **NearHook Action** | **Prunes immediately** (saves 1.1s) | **Tracks in tree** (marks event as `REFUNDED`) |
+
+When a contract callback like `ft_resolve_transfer` handles a failure and returns tokens to the sender, NearHook marks the payload's `business_status` as `REFUNDED` instead of reporting a false success.
+
+### 4. Early-Exit Sieve: Filtering 95%+ of Network Noise
+NEAR processes hundreds of receipts per second across thousands of unrelated contracts (games, meme tokens, bot claims). 
+
+NearHook uses a high-speed in-memory subscription sieve. Transactions that do not touch your subscribed contracts or registered cross-chain clearinghouses (`intents.near`, `v1.signer`) are discarded immediately. This keeps NearHook's memory footprint tiny and ensures sub-millisecond webhook routing.
+
+### 5. Architectural Foundations: Built on Proven Systems
+NearHook's receipt stitcher isn't an ad-hoc script—it is the direct application of three battle-tested industry foundations:
+
+```mermaid
+flowchart LR
+    subgraph Inbound["Incoming Shard Receipts"]
+        R0["Receipt R0"]
+        R1["Receipt R1"]
+        R2["Receipt R2"]
+    end
+
+    subgraph Aggregator["NearHook Stitcher (Stateful Aggregator)"]
+        direction TB
+        C1["1. Match Correlation ID<br/>Group receipts by tx_hash"]
+        C2["2. Check Completeness<br/>Spawned − Executed = 0"]
+        C3["3. Package Event<br/>Verify refunds & Ed25519 sign"]
+        C1 --> C2 --> C3
+    end
+
+    Inbound --> Aggregator
+    Aggregator --> Out["Verified Webhook"]
+
+    style Aggregator fill:#0B0F17,stroke:#9945FF,stroke-width:2px,color:#fff
+    style Inbound fill:#111827,stroke:#3B82F6,stroke-width:1px,color:#fff
+    style Out fill:#064E3B,stroke:#00EC97,stroke-width:2px,color:#fff
+```
+
+1. **The Stateful Aggregator (Enterprise Integration Patterns):**  
+   In enterprise messaging, when an event splits across multiple systems, a *Stateful Aggregator* does three simple jobs:
+   * **Correlation ID:** Groups every shard receipt under its parent transaction (`tx_hash`).
+   * **Completeness Check:** Holds the event in memory until every child receipt arrives (`Spawned − Executed = 0`), backed by a safety timeout.
+   * **Aggregation:** Combines all receipt outcomes into one canonical, verified JSON webhook.
+
+2. **Tail-Based Assembly (OpenTelemetry Distributed Tracing):**  
+   In microservices, tracing systems track requests bouncing across dozens of independent services. Naive indexers make "head-based" decisions—firing as soon as the first step starts. NearHook uses **tail-based assembly**: it buffers the trace until the very end (the "tail") to check whether any downstream call failed or refunded before notifying your backend.
+
+3. **Data-Driven Triggers (Google Dataflow Model):**  
+   Instead of a dumb timer that waits an arbitrary 5 seconds, NearHook separates *when pieces arrive* from *when the result is ready*. The transaction window closes the exact millisecond the final receipt settles, delivering the lowest possible latency.
 
 ---
 
@@ -246,7 +310,8 @@ When a cross-chain swap or intent settles on NEAR, your backend or AI agent rece
   "settlement": {
     "tx_hash": "8kL9v7m2xPqR4tY9uW1zK3nM5pQ7vB2cX4zL9mN1pQr",
     "blocks_spanned": 3,
-    "status": "CONFIRMED"
+    "protocol_status": "SUCCESS",
+    "business_status": "CONFIRMED"
   },
   "route": {
     "source_chain": "SOLANA",
@@ -262,6 +327,9 @@ When a cross-chain swap or intent settles on NEAR, your backend or AI agent rece
 }
 ```
 
+* **`protocol_status` (`SUCCESS`):** Confirms that all smart contract calls resolved without unhandled WebAssembly execution panics.
+* **`business_status` (`CONFIRMED` vs `REFUNDED`):** Confirms whether the actual business operation succeeded or if a resolver callback (such as `ft_resolve_transfer`) returned the funds to the sender.
+
 ---
 
 ## 9. Summary: FastNEAR Directly vs. With NearHook
@@ -272,6 +340,7 @@ When a cross-chain swap or intent settles on NEAR, your backend or AI agent rece
 | **Delivery Mechanism** | You must run continuous `while(true)` polling | Standard **HTTP POST Webhook** pushed to you |
 | **Receipt Stitching** | **None.** You must write code to track multi-block receipts | **Automatic.** NearHook holds dispatch until terminal settlement |
 | **Refund Detection** | You must parse raw contract callbacks manually | Webhook explicitly says `CONFIRMED` vs `REFUNDED` |
+| **Gas Refund Latency** | Waits 1 extra block (~1.1s) for gas change receipts | **Prunes gas change receipts** for faster sub-second dispatch |
 | **Compute Cost** | Pay 24/7 for servers running continuous polling loops | **$0 idle cost.** Serverless & agents wake up only when needed |
 | **Local Dev (`localhost:3000`)**| Impossible without ngrok or custom proxies | **Built-in tunnel (`npx nearhook listen`)** |
 | **Historical Replay** | Re-run on-chain transactions and pay gas | **1-click free replay** from durable event logs |
