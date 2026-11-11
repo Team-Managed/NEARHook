@@ -1,27 +1,66 @@
-# NearHook: Asynchronous Receipt-Aware Event Delivery & Local Tunneling for NEAR Protocol
+# NearHook: Asynchronous Receipt Stitching & Cross-Chain Event Ingress for NEAR Protocol
 
-**Technical Whitepaper** • Version 2.1 • November 2026  
-**Category:** Developer Infrastructure / Event Ingress / NEAR Protocol  
-
----
-
-## Abstract
-
-Consuming state transitions on NEAR Protocol introduces a fundamental correctness challenge absent in single-block atomic chains: **Nightshade asynchronous sharding**. A single transaction decomposes into a tree of cross-shard execution receipts (`Receipt`) resolving across 2 to 4+ consecutive blocks. Naive indexers triggering callbacks upon root transaction inclusion suffer from **Optimistic Settlement Vulnerabilities**: a parent receipt succeeds at block $B_t$, but a child cross-contract promise panics at block $B_{t+1}$, causing a contract callback to issue a refund at block $B_{t+2}$.
-
-**NearHook** is a developer-first, receipt-aware event delivery gateway and local tunneling protocol for NEAR. It provides:
-1. **Receipt Dependency Tracking:** Traces parent-child promises and callback dependencies across shards, withholding dispatch until terminal settlement is provably complete.
-2. **Dual-Axis Settlement Evaluation:** Separates technical protocol outcomes from business settlement (distinguishing confirmed transfers from deliberate `ft_resolve_transfer` refund callbacks).
-3. **NEAR Clearinghouse Ingress:** Ingress for multi-chain activity settling via NEAR Intents (`intents.near` NEP-297/DIP-4) and MPC Chain Signatures (`v1.signer`).
-4. **Attested Delivery & Zero-Config Tunneling:** Ed25519 payload signatures with public key pinning, event idempotency, durable PostgreSQL `JSONB` replay, and instant local delivery via `npx nearhook listen`.
+**Whitepaper** • Version 2.4 • November 2026  
 
 ---
 
-## 1. The Problem: Asynchronous Sharding & Optimistic Settlement
+## 1. What is NearHook?
 
-Monolithic blockchains execute transactions atomically in a single block. NEAR partitions state across independent shards ($S_0, S_1, \dots, S_k$), decoupling transaction submission from execution through asynchronous **Receipts**.
+> **NearHook stitches NEAR’s asynchronous receipts into signed webhooks across 35+ chains (Bitcoin, Ethereum, Solana, and beyond). It streams verified cross-chain events straight to cloud backends or local AI agents via a zero-config CLI tunnel.**
 
-When contracts interact across shards, downstream callbacks resolve blocks after the initiating receipt:
+To understand why this is a major breakthrough, consider its three pillars:
+
+```mermaid
+flowchart TD
+    subgraph P1["1. Receipt Stitching"]
+        direction TB
+        S1["Fragmented Shard Receipts<br/>(Resolving across 2–4 blocks)"] --> ST["NearHook Stitcher<br/>Correlates & waits for refunds"]
+        ST --> ST2["1 Complete, Verified Event"]
+    end
+
+    subgraph P2["2. 35+ Chains in One Stream"]
+        direction TB
+        C1["Bitcoin • Ethereum • Solana • Base"] --> CL["NEAR Clearinghouses<br/>(intents.near & v1.signer)"]
+        CL --> C2["Unified Cross-Chain Payload"]
+    end
+
+    subgraph P3["3. Direct Ingress & Tunneling"]
+        direction TB
+        T1["Verified Ed25519 Payload"] --> CLD["Cloud Backends (HTTPS POST)"]
+        T1 --> LOC["Local AI Agents & Devs<br/>(npx nearhook listen)"]
+    end
+
+    P1 ==> P2 ==> P3
+
+    style P1 fill:#111827,stroke:#00EC97,stroke-width:1px,color:#fff
+    style P2 fill:#111827,stroke:#9945FF,stroke-width:1px,color:#fff
+    style P3 fill:#111827,stroke:#3B82F6,stroke-width:1px,color:#fff
+```
+
+### Pillar 1: What is "Receipt Stitching"?
+On NEAR, a single transaction doesn't execute in one atomic step. It fragments into multiple asynchronous pieces called **Receipts** that jump across shards over 2 to 4+ blocks. 
+
+**"Stitching"** means NearHook acts as the puzzle assembler: it tracks the parent receipt, follows every child promise, monitors refund callbacks, and holds the event in memory until the whole tree completes. It stitches the fragmented pieces into a single, cohesive, finalized event.
+
+### Pillar 2: How Does it Cover 35+ Chains?
+NEAR is an omnichain clearinghouse:
+* **NEAR Intents (`intents.near`):** Swaps and bridges tokens across 35+ networks (Bitcoin, Solana, Ethereum, Dogecoin, Base, Arbitrum) using native Omni-Bridge contracts.
+* **Chain Signatures (`v1.signer`):** Uses decentralized Multi-Party Computation (MPC) to sign transactions for foreign blockchains directly from NEAR.
+
+Instead of paying for and maintaining 35 separate blockchain indexers, NearHook indexes NEAR's clearinghouse contracts, turning multi-chain settlements into **one unified webhook pipe**.
+
+### Pillar 3: Streaming to Cloud Backends & Local AI Agents
+* **Production Cloud:** Dispatches signed HTTPS POST webhooks to your serverless functions or microservices (Next.js, FastAPI, AWS Lambda).
+* **Local Development & AI Agents:** Running `npx nearhook listen` streams live verified events straight into your local server (`localhost:3000`) or local AI agent runtime (ElizaOS, LangChain) with zero setup and no ngrok.
+* **Scale-to-Zero:** AI agents sleep at **$0 idle compute cost** and wake up in milliseconds only when a verified event arrives.
+
+---
+
+## 2. The Problem: The "Early Webhook" Trap
+
+On single-block blockchains (Ethereum, Solana), transactions finish immediately. 
+
+On NEAR's Nightshade sharded architecture, transactions take **2 to 4 blocks** to complete. If an indexer fires a webhook on Block 1, your backend acts on partial state before downstream calls have finished:
 
 ```mermaid
 sequenceDiagram
@@ -30,69 +69,41 @@ sequenceDiagram
     participant Shard1 as Shard 1 (intents.near)
     participant Shard3 as Shard 3 (usdc.near)
     participant Shard2 as Shard 2 (merchant.near)
-    participant Client as Merchant Backend
+    participant Backend as Your Backend
 
-    Note over Shard1: Block B_101
-    User->>Shard1: Transaction T: Execute transfer-call
-    Shard1->>Shard1: Deduct balance & emit log
-    Note right of Shard1: Naive indexer fires "Payment Received" HERE! ⚠️
-    Shard1-->>Client: ❌ Premature Webhook (Optimistic Vulnerability)
+    User->>Shard1: 1. Start cross-chain transfer
+    Shard1->>Shard1: Deducts tokens (Initial Success)
+    Note right of Shard1: Naive indexers send webhook HERE! ⚠️
+    Shard1-->>Backend: ❌ "Payment Received!" (PREMATURE)
     Shard1->>Shard3: Spawn Promise Receipt R_1 (ft_transfer_call)
 
     Note over Shard3: Block B_102
-    Shard3->>Shard3: Decrement sender, credit merchant
     Shard3->>Shard2: Spawn Promise Receipt R_2 (ft_on_transfer)
     Shard3->>Shard3: Register Callback Receipt R_3 (ft_resolve_transfer)
 
     Note over Shard2: Block B_103
-    Shard2--xShard2: PANIC: Out of Stock / Order Expired!
-    Shard2-->>Shard3: Return Failure(ActionError)
+    Shard2--xShard2: PANIC: Out of stock / Order expired!
+    Shard2-->>Shard3: Return Failure
 
     Note over Shard3: Block B_104
-    Shard3->>Shard3: Execute Callback Receipt R_3 (ft_resolve_transfer)
-    Shard3->>Shard3: Inspects promise result (Failed) & refunds sender
-    Note over Shard3: Transfer Refunded! Tokens returned to sender.
+    Shard3->>Shard3: Execute Callback R_3: Refund 100 USDC to sender
+    Note over Shard3: Transfer Refunded! User got money back.
 ```
 
-If an indexer fires on $R_0$'s inclusion, the merchant releases off-chain goods for a payment that is rolled back two blocks later.
+**The consequence:** If you fulfilled an order on Block 1, you gave away goods for free because the payment was refunded on Block 4.
 
 ---
 
-## 2. Receipt Dependency Tracking & Dual-Axis Settlement
+## 3. How NearHook Stitches Receipts & Detects Refunds
 
-### 2.1 Receipt Dependency Graph ($G_T$)
-
-NearHook models execution as a dynamic Directed Acyclic Graph:
-
-$$G_T = (V_T, E_T)$$
-
-* **Vertices ($V_T$):** Unique `ReceiptId` outcomes (`ReceiptExecution`).
-* **Edges ($E_T$):** Typed causal links:
-  * **Promise Spawns ($E_{\text{spawn}}$):** Parent receipt $u$ spawns child $v$ via `outcome.receipt_ids`.
-  * **Callback Dependencies ($E_{\text{callback}}$):** Callback $w$ waits for promise $v$ to return a `PromiseResult`.
+NearHook waits until the entire receipt graph finishes before dispatching:
 
 ```mermaid
-flowchart TD
-    subgraph B101["Block B_101 • Shard 1"]
-        R0["Receipt R_0<br/><b>intents.near</b><br/>execute_intents<br/><i>Status: SuccessReceiptId(R_1)</i>"]
-    end
-
-    subgraph B102["Block B_102 • Shard 3"]
-        R1["Receipt R_1<br/><b>usdc.near</b><br/>ft_transfer_call<br/><i>Status: SuccessReceiptId(R_2)</i>"]
-    end
-
-    subgraph B103["Block B_103 • Shard 2"]
-        R2["Receipt R_2<br/><b>merchant.near</b><br/>ft_on_transfer<br/><i>Status: Failure(ActionError)</i>"]
-    end
-
-    subgraph B104["Block B_104 • Shard 3"]
-        R3["Receipt R_3 (Callback)<br/><b>usdc.near</b><br/>ft_resolve_transfer<br/><i>Status: SuccessValue(refunded)</i>"]
-    end
-
-    R0 ==>|"E_spawn (Promise)"| R1
-    R1 ==>|"E_spawn (Promise)"| R2
-    R1 -.->|"E_callback (Registered Callback)"| R3
-    R2 ==>|"Yields PromiseResult::Failed"| R3
+flowchart LR
+    R0["<b>Step 1</b><br/>intents.near<br/><i>Initial Call</i>"] ==>|"Spawns Promise"| R1["<b>Step 2</b><br/>usdc.near<br/><i>Token Transfer</i>"]
+    R1 ==>|"Spawns Promise"| R2["<b>Step 3</b><br/>merchant.near<br/><i>Panics / Fails</i>"]
+    R1 -.->|"Registered Callback"| R3["<b>Step 4 (Refund)</b><br/>usdc.near::resolve<br/><i>Returns Tokens</i>"]
+    R2 ==>|"Triggers"| R3
 
     style R0 fill:#111827,stroke:#00EC97,stroke-width:2px,color:#fff
     style R1 fill:#111827,stroke:#00EC97,stroke-width:2px,color:#fff
@@ -100,264 +111,114 @@ flowchart TD
     style R3 fill:#111827,stroke:#F59E0B,stroke-width:2px,color:#fff
 ```
 
-### 2.2 Terminal Resolution Condition
+### 1. Tracks All Related Receipts
+NearHook connects parent receipts to child calls and callbacks. It only marks a transaction ready when every child and callback has completed.
 
-A transaction $T$ is **Terminally Resolved** only when:
-1. Root receipt $v_{\text{root}}$ has executed.
-2. All discovered child promises have executed.
-3. All registered callbacks have executed.
-4. Block heights for all $v \in V_T$ are confirmed in the indexer's contiguous checkpoint log.
-
-### 2.3 Dual-Axis Settlement Semantics
-
-A downstream promise failure does not imply overall transaction failure: NEAR smart contracts deliberately use callbacks like `ft_resolve_transfer` to handle recipient errors cleanly. NearHook evaluates outcomes along two axes:
-
-| Status Axis | Value | Meaning |
-| :--- | :--- | :--- |
-| **`protocol_status`** | `SUCCESS` | Receipt tree completed without unhandled runtime panics. |
-| | `FAILURE` | Unhandled runtime panic or invalid action error occurred. |
-| **`business_status`** | `CONFIRMED` | Primary operation succeeded (e.g. transfer cleared). |
-| | `REFUNDED` | Downstream promise failed; resolver callback refunded tokens. |
-| | `FAILED` | Transaction aborted before resolution. |
+### 2. Understands Business Outcomes (Refunds vs Success)
+When a contract callback like `ft_resolve_transfer` handles a failure and refunds tokens, NearHook accurately reports the business status as `REFUNDED` instead of reporting a false success or crashing your integration.
 
 ---
 
-## 3. NEAR Clearinghouse Ingress (`intents.near` & `v1.signer`)
+## 4. Multi-Chain Settlement in One Webhook
 
-NearHook provides normalized ingress for multi-chain activity settling on NEAR's native clearinghouses:
+Instead of managing node providers and indexers across 35+ chains, NearHook translates NEAR's cross-chain contracts into clear, human-readable events:
 
 ```mermaid
 flowchart TD
-    subgraph External["External Blockchains (35+ Networks)"]
-        BTC["Bitcoin & UTXO (BTC, DOGE)"]
-        EVM["EVM L1 & L2 (Ethereum, Base, Arbitrum)"]
-        NonEVM["Non-EVM (Solana, TON, Sui)"]
-    end
+    Chains["35+ Blockchains<br/>(Bitcoin, Solana, Ethereum, Base, TON)"] ==>|"Cross-Chain Swaps & Signing"| NEAR["NEAR Clearinghouses<br/>• intents.near (swaps & balances)<br/>• v1.signer (MPC threshold signatures)"]
+    NEAR ==>|"Receipts & Event Logs"| NearHook["NearHook Engine<br/>• Stitches multi-shard receipts<br/>• Verifies settlement & refunds<br/>• Signs payload with Ed25519"]
+    NearHook -->|"Live HTTPS POST"| Cloud["Cloud Backends (Next.js, FastAPI, Lambda)"]
+    NearHook -->|"CLI Tunnel Stream"| Tunnel["Local Dev & AI Agents (`nearhook listen`)"]
 
-    subgraph Clearinghouse["NEAR Clearinghouses"]
-        Intents["<b>intents.near</b><br/>• DIP-4 / NEP-297 event logs<br/>• token_diff & Omni-Bridge balances"]
-        Signer["<b>v1.signer</b><br/>• Secp256k1 & Ed25519 MPC<br/>• Foreign transaction signatures"]
-    end
-
-    subgraph NearHook["NearHook Ingestion & Dispatch"]
-        Poller["Checkpointed FastNEAR Poller"]
-        Tracker["Receipt Dependency Tracker"]
-        Evaluator["Settlement Evaluator"]
-        Normalizer["Omnichain Normalizer"]
-        Attestation["Ed25519 Relayer Signer"]
-    end
-
-    subgraph Ingress["Delivery Targets"]
-        CloudWebhook["Mode A: HTTPS Webhook"]
-        CLITunnel["Mode B: CLI Local Tunnel"]
-        AIAgent["Mode C: AI Agent ($0 Idle)"]
-    end
-
-    BTC & EVM & NonEVM ==>|"Cross-Chain Swaps & Deposits"| Intents
-    BTC & EVM & NonEVM ==>|"Foreign Signing Requests"| Signer
-    Intents & Signer ==> Poller
-    Poller --> Tracker --> Evaluator --> Normalizer --> Attestation
-    Attestation --> CloudWebhook & CLITunnel & AIAgent
-
-    style Intents fill:#111827,stroke:#00EC97,stroke-width:2px,color:#fff
-    style Signer fill:#111827,stroke:#9945FF,stroke-width:2px,color:#fff
-    style NearHook fill:#0B0F17,stroke:#1F2937,stroke-width:1px,color:#fff
-    style CloudWebhook fill:#111827,stroke:#3B82F6,stroke-width:2px,color:#fff
-    style CLITunnel fill:#111827,stroke:#F59E0B,stroke-width:2px,color:#fff
-    style AIAgent fill:#111827,stroke:#10B981,stroke-width:2px,color:#fff
+    style NEAR fill:#111827,stroke:#00EC97,stroke-width:2px,color:#fff
+    style NearHook fill:#0B0F17,stroke:#9945FF,stroke-width:2px,color:#fff
+    style Cloud fill:#111827,stroke:#3B82F6,stroke-width:1px,color:#fff
+    style Tunnel fill:#111827,stroke:#F59E0B,stroke-width:1px,color:#fff
 ```
 
-* **NEAR Intents (`intents.near`):** Parses `EVENT_JSON:` logs (`standard: "dip4"`, `event: "token_diff"`), resolving Omni-Bridge contracts (`nep141:sol.omft.near`, `nep141:btc.omft.near`) into chain identifiers and formatted decimal amounts.
-* **Chain Signatures (`v1.signer`):** Correlates initial `sign` request receipts with asynchronous MPC callbacks emitting threshold signature components (`big_r`, `s`).
+* **NEAR Intents (`intents.near`):** Parses NEP-297 `token_diff` logs, turning raw addresses like `nep141:sol.omft.near` into clean metadata (`SOLANA`, `15.0 SOL`).
+* **Chain Signatures (`v1.signer`):** Correlates sign requests with asynchronous MPC callbacks, delivering ready-to-broadcast foreign signatures.
 
 ---
 
-## 4. Cryptographic Security & Attestation
+## 5. Security: Verifying Incoming Webhooks
 
-### 4.1 Signing Pre-Image
-Payloads are signed with the relayer's private Ed25519 key over canonical pre-image:
-$$M = \tau \parallel "." \parallel B$$
-where $\tau$ is Unix epoch seconds and $B$ is the serialized JSON body.
-
-Headers attached:
-- `X-NearHook-Id: evt_...` (Unique event ID)
-- `X-NearHook-Timestamp: <tau>`
-- `X-NearHook-Signature: ed25519:<hex>`
-
-### 4.2 Secure Receiver Verification Sequence
+NearHook secures every delivery using native Ed25519 cryptographic signatures:
 
 ```mermaid
-flowchart TD
-    Start["Incoming Webhook"] --> HeaderCheck{"Headers Present?<br/>Id, Timestamp, Sig"}
-    HeaderCheck -- "No" --> Reject1["❌ 400 Bad Request"]
-    HeaderCheck -- "Yes" --> FreshnessCheck{"Freshness Check<br/>|now - tau| <= 300s"}
-    FreshnessCheck -- "No" --> Reject2["❌ 401 Unauthorized (Expired)"]
-    FreshnessCheck -- "Yes" --> IdempotencyCheck{"Idempotency Cache<br/>Has event_id been seen?"}
-    IdempotencyCheck -- "Yes" --> Reject3["❌ 409 Conflict (Replay Blocked)"]
-    IdempotencyCheck -- "No" --> CryptoCheck{"Ed25519 Verify<br/>Against PINNED Public Key"}
-    CryptoCheck -- "Invalid" --> Reject4["❌ 403 Forbidden (Tampered)"]
-    CryptoCheck -- "Valid" --> Accept["✅ 200 OK<br/>Store event_id (TTL 600s) & Process"]
+flowchart LR
+    Incoming["Incoming Webhook"] --> TimeCheck{"1. Timestamp<br/>Within 5 mins?"}
+    TimeCheck -- "Pass" --> DedupCheck{"2. Seen before?<br/>Check event_id"}
+    DedupCheck -- "New" --> SigCheck{"3. Signature Check<br/>Pinned Public Key"}
+    SigCheck -- "Valid" --> Accept["✅ 200 OK<br/>Process Event"]
 
-    style Start fill:#111827,stroke:#3B82F6,stroke-width:2px,color:#fff
+    TimeCheck -- "Fail" --> Reject1["❌ Reject: Expired"]
+    DedupCheck -- "Seen" --> Reject2["❌ Reject: Replay Attack"]
+    SigCheck -- "Fail" --> Reject3["❌ Reject: Tampered"]
+
+    style Incoming fill:#111827,stroke:#3B82F6,stroke-width:2px,color:#fff
+    style Accept fill:#064E3B,stroke:#00EC97,stroke-width:2px,color:#fff
     style Reject1 fill:#450A0A,stroke:#F43F5E,stroke-width:1px,color:#fff
     style Reject2 fill:#450A0A,stroke:#F43F5E,stroke-width:1px,color:#fff
     style Reject3 fill:#450A0A,stroke:#F43F5E,stroke-width:1px,color:#fff
-    style Reject4 fill:#450A0A,stroke:#F43F5E,stroke-width:1px,color:#fff
-    style Accept fill:#064E3B,stroke:#00EC97,stroke-width:2px,color:#fff
 ```
 
-* **Public Key Pinning:** Clients pin the NearHook relayer public key via environment variables; dynamic public keys in request headers are strictly rejected to eliminate relayer spoofing.
-* **Event Idempotency:** Duplicate `X-NearHook-Id` values within the 300s window are rejected to prevent replay attacks.
-
----
-
-## 5. Ingestion Engine & Storage Architecture
-
-### 5.1 Checkpointed FastNEAR Poller
-
-FastNEAR’s NEARDATA is an **HTTP query API**, not a streaming socket. NearHook runs a checkpointed polling loop enforcing contiguous height processing:
-
-```mermaid
-flowchart TD
-    ReadCheckpoint["1. Read Checkpoint H_last"] --> PollLatest["2. Poll /v0/last_block/optimistic"]
-    PollLatest --> GapCheck{"3. H_current > H_last + 1?"}
-    GapCheck -- "Yes" --> EnqueueGaps["Enqueue Missing Heights"]
-    GapCheck -- "No" --> FetchBlock["4. Fetch /v0/block_opt/{height}"]
-    EnqueueGaps --> FetchBlock
-    FetchBlock --> Extract["5. Parse Receipts & Logs"]
-    Extract --> UpdateTracker["6. Update Receipt Tracker"]
-    UpdateTracker --> CheckpointWrite["7. Persist Checkpoint H_last = height"]
-    CheckpointWrite --> PollLatest
-
-    style ReadCheckpoint fill:#111827,stroke:#3B82F6,stroke-width:2px,color:#fff
-    style PollLatest fill:#111827,stroke:#00EC97,stroke-width:2px,color:#fff
-    style GapCheck fill:#111827,stroke:#F59E0B,stroke-width:2px,color:#fff
-    style EnqueueGaps fill:#111827,stroke:#F59E0B,stroke-width:1px,color:#fff
-    style FetchBlock fill:#111827,stroke:#3B82F6,stroke-width:2px,color:#fff
-    style Extract fill:#111827,stroke:#00EC97,stroke-width:2px,color:#fff
-    style UpdateTracker fill:#111827,stroke:#9945FF,stroke-width:2px,color:#fff
-    style CheckpointWrite fill:#064E3B,stroke:#00EC97,stroke-width:2px,color:#fff
-```
-
-### 5.2 Two-Tier Storage Architecture
-
-1. **Ephemeral Hot Memory (Redis, 120s TTL):** Buffers in-flight receipts and causal dependencies during the multi-block resolution window. Purged upon terminal handoff.
-2. **Durable Store (PostgreSQL / NeonDB):**
-   * `subscriptions`: Wildcard routing (`*.app.near`), chain filters, target URLs.
-   * `deliveries`: Stitched canonical JSON payloads (`JSONB`), HTTP status codes, latencies, and attempt counts. Powers **1-click gas-free replay**.
-
-### 5.3 Delivery Pipeline & Circuit Breaker
-
-Failed deliveries ($\ge 400$ or $>5000\text{ms}$) retry with jittered exponential backoff (1s, 3s, 9s, 27s, 81s).
-
-```mermaid
-stateDiagram-v2
-    [*] --> ACTIVE: Endpoint Configured
-    ACTIVE --> ACTIVE: 2xx Success (Reset fail counter)
-    ACTIVE --> ACTIVE: Error >= 400 (Exponential Retry 1s..81s)
-    ACTIVE --> PAUSED_UNHEALTHY: 10 Consecutive Failures OR >95% Failure Rate
-    PAUSED_UNHEALTHY --> RECOVERING: Manual Reset / Probe
-    RECOVERING --> ACTIVE: Test Delivery Succeeds (200 OK)
-    RECOVERING --> PAUSED_UNHEALTHY: Test Delivery Fails
-```
+1. **Ed25519 Signatures:** Payloads are signed with the relayer's private key. Your server checks it against NearHook's pinned public key.
+2. **Replay Protection:** Unique `X-NearHook-Id` headers allow your server to reject duplicate requests sent within the 5-minute window.
 
 ---
 
 ## 6. Zero-Config Local Tunneling (`nearhook listen`)
 
-Developers test webhook handlers behind firewalls without ngrok or port-forwarding:
+Developers and AI engineers can develop locally without port-forwarding or paying for ngrok:
+
+```bash
+npx nearhook listen --account "*.myapp.near" --forward http://localhost:3000/api/webhook
+```
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Engine as NearHook Engine
-    participant Hub as Tunnel Hub (WebSocket Server)
     participant CLI as Developer CLI (nearhook listen)
-    participant Local as Localhost Server (localhost:3000)
+    participant Hub as NearHook Cloud Hub
+    participant Local as Local Server (localhost:3000)
 
-    CLI->>Hub: 1. Outbound WebSocket Connection (Auth & Filter Rules)
-    Hub-->>CLI: 2. WebSocket Connected & Stream Ready
-    Note over Engine,Hub: Verified receipt tree resolves on NEAR shards
-    Engine->>Hub: 3. Dispatch finalized event with Ed25519 signature
-    Hub->>CLI: 4. Stream event payload over WebSocket
-    Note over CLI: 5. Verify Ed25519 Signature against Pinned Relayer Key
-    CLI->>Local: 6. Forward HTTP POST to http://localhost:3000/api/webhook
-    Local-->>CLI: 7. Response: 200 OK (18ms)
-    CLI-->>Hub: 8. Report Status & Round-trip Latency
-    CLI->>CLI: 9. Print formatted delivery log in console
+    CLI->>Hub: 1. Connects outbound via persistent WebSocket
+    Note over Hub: Receipt tree resolves on NEAR shards
+    Hub->>CLI: 2. Pushes verified event
+    CLI->>CLI: 3. Verifies Ed25519 signature locally
+    CLI->>Local: 4. Forwards HTTP POST to localhost:3000
+    Local-->>CLI: 5. Returns 200 OK (18ms)
+    CLI->>CLI: 6. Prints formatted delivery log in terminal
 ```
+
+* **Firewall Traversal:** Uses an outbound WebSocket connection—no router changes or static IPs needed.
+* **1-Click Free Replay:** If your local server crashes during testing, click **Replay** in the dashboard to re-send the exact payload without paying gas on NEAR.
 
 ---
 
-## 7. Canonical Webhook Payload
+## 7. Example Webhook Payload
+
+When a cross-chain swap or intent settles on NEAR, your backend or AI agent receives this clean JSON payload:
 
 ```json
 {
-  "event_id": "evt_01h8x4a9k7z2m3n4p5q6r7s8t9",
-  "event_type": "INTENT_SETTLEMENT_COMPLETED",
-  "finality": "OPTIMISTIC",
-  "subscription": {
-    "id": "sub_99214a",
-    "account_filter": "intents.near",
-    "chain_filter": ["SOLANA", "BITCOIN"]
-  },
+  "event_id": "evt_99214a8b3c",
+  "event_type": "INTENT_SETTLED",
   "settlement": {
-    "origin_tx_hash": "8kL9v7m2xPqR4tY9uW1zK3nM5pQ7vB2cX4zL9mN1pQr",
-    "root_receipt_id": "4fG1b89aBcDeF2gH3iJ4kL5mN6oP7qR8sT9uV0wXyZ1",
-    "start_block_height": 142890120,
-    "final_block_height": 142890122,
+    "tx_hash": "8kL9v7m2xPqR4tY9uW1zK3nM5pQ7vB2cX4zL9mN1pQr",
     "blocks_spanned": 3,
-    "total_gas_burnt_tgas": 14.8,
-    "protocol_status": "SUCCESS",
-    "business_status": "CONFIRMED"
+    "status": "CONFIRMED"
   },
-  "receipt_tree": {
-    "root_receipt_id": "4fG1b89aBcDeF2gH3iJ4kL5mN6oP7qR8sT9uV0wXyZ1",
-    "nodes": [
-      {
-        "receipt_id": "4fG1b89aBcDeF2gH3iJ4kL5mN6oP7qR8sT9uV0wXyZ1",
-        "block_height": 142890120,
-        "shard_id": 1,
-        "receiver_id": "intents.near",
-        "method": "execute_intents",
-        "status": "SuccessReceiptId"
-      },
-      {
-        "receipt_id": "9aBc2d3eF4gH5iJ6kL7mN8oP9qR0sT1uV2wX3yZ4LmN4",
-        "block_height": 142890121,
-        "shard_id": 3,
-        "receiver_id": "btc.omft.near",
-        "method": "ft_withdraw",
-        "status": "SuccessReceiptId"
-      },
-      {
-        "receipt_id": "7xKp93m2L1aB4c5d6e7f8g9h0i1j2k3l4m5n6o7pQrS8",
-        "block_height": 142890122,
-        "shard_id": 0,
-        "receiver_id": "v1.signer",
-        "method": "sign",
-        "status": "SuccessValue"
-      }
-    ],
-    "dependencies": [
-      { "parent": "4fG1b8...XyZ1", "child": "9aBc2d...LmN4", "type": "PROMISE" },
-      { "parent": "9aBc2d...LmN4", "child": "7xKp93...QrS8", "type": "PROMISE" }
-    ]
-  },
-  "omnichain_settlement": {
-    "clearinghouse": "intents.near",
-    "standard": "NEP-297",
-    "standard_version": "dip4:0.3.0",
+  "route": {
     "source_chain": "SOLANA",
-    "source_token": "nep141:sol.omft.near",
-    "source_amount_formatted": "15.0 SOL",
+    "source_amount": "15.0 SOL",
     "destination_chain": "BITCOIN",
-    "destination_token": "nep141:btc.omft.near",
-    "destination_amount_formatted": "0.0285 BTC",
+    "destination_amount": "0.0285 BTC",
     "destination_address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
   },
   "attestation": {
-    "relayer_public_key": "ed25519:3N8xZ2LkdIwHu7ix9pLmQ4vB7nM2kP8xR1tY5uW9zQ2...",
+    "relayer_public_key": "ed25519:3N8xZ2LkdIwHu7ix9pLm...",
     "timestamp": 1762849200
   }
 }
@@ -365,24 +226,12 @@ sequenceDiagram
 
 ---
 
-## 8. Latency Design Targets
+## 8. Summary: Why NearHook?
 
-| Stage | Mechanism | Target Latency |
+| Feature | Traditional Ingestion | With NearHook |
 | :--- | :--- | :--- |
-| **Block Polling** | FastNEAR HTTP polling (1s interval) | $200\text{ms} - 500\text{ms}$ |
-| **Receipt Tracking** | In-Memory / Redis Hash operations | $<5\text{ms}$ per chunk |
-| **Terminal Check** | Pure DAG dependency evaluator | $<1\text{ms}$ |
-| **Attestation** | Ed25519 signing (`@noble/curves`) | $<0.5\text{ms}$ |
-| **Dispatch** | Outbound HTTP POST / WebSocket stream | $15\text{ms} - 50\text{ms}$ |
-
-*Formal benchmarks across 10,000 synthetic multi-shard transactions will be published in a companion technical evaluation report.*
-
----
-
-## References
-
-1. Skidanov, A., & Polosukhin, I. (2019). *Nightshade: Consensus and sharding specification for NEAR Protocol*.
-2. NEAR Protocol Docs. *Receipts and Cross-Contract Calls*. https://docs.near.org
-3. NEAR Enhancement Proposals. *NEP-141: Fungible Token Standard* & *NEP-297: Event Standard*.
-4. Decentralized Intent Protocol. *DIP-4: Multi-Token Event Standards for intents.near*.
-5. FastNEAR. *NEARDATA API Documentation*. https://docs.fastnear.com
+| **Cross-Shard Safety** | Naive indexers fire early and miss refunds | **Stitches all receipts** and accurately verifies settlement |
+| **Multi-Chain Coverage** | Run 35+ separate indexers for each chain | **One webhook stream** for all activity settling on NEAR |
+| **Local Development** | Pay for ngrok or configure complex tunnels | Run **`npx nearhook listen`** out of the box |
+| **Debugging** | Re-run transactions and pay gas fees to test | **1-click free replay** from durable event logs |
+| **AI Agents** | Burn compute on 24/7 continuous polling loops | **Scale-to-zero**: sleep at $0 cost and wake up on webhook |
