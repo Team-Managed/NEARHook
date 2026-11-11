@@ -1,6 +1,6 @@
 # NearHook: Asynchronous Receipt Stitching & Cross-Chain Event Ingress for NEAR Protocol
 
-**Whitepaper** • Version 2.5 • November 2026  
+**Whitepaper** • Version 2.6 • November 2026  
 
 ---
 
@@ -134,36 +134,114 @@ flowchart LR
 
 ## 4. How NearHook Stitches Receipts & Detects Refunds
 
-NearHook waits until the entire receipt graph finishes before dispatching:
+Here is the master architecture showing how fragmented shard receipts flow from the NEAR blockchain through the dynamic DAG stitcher and into your cloud backend, local server, or AI agent:
 
 ```mermaid
-flowchart LR
-    R0["<b>Step 1</b><br/>intents.near<br/><i>Initial Call</i>"] ==>|"Spawns Promise"| R1["<b>Step 2</b><br/>usdc.near<br/><i>Token Transfer</i>"]
-    R1 ==>|"Spawns Promise"| R2["<b>Step 3</b><br/>merchant.near<br/><i>Panics / Fails</i>"]
-    R1 -.->|"Registered Callback"| R3["<b>Step 4 (Refund)</b><br/>usdc.near::resolve<br/><i>Returns Tokens</i>"]
-    R2 ==>|"Triggers"| R3
+flowchart TD
+    subgraph S1["1. NEAR Nightshade Shards (Raw Receipts)"]
+        direction LR
+        SH0["Shard 0: Signatures"] 
+        SH1["Shard 1: Intents"] 
+        SH2["Shard 2: Merchant"] 
+        SH3["Shard 3: Tokens"]
+    end
 
-    style R0 fill:#111827,stroke:#00EC97,stroke-width:2px,color:#fff
-    style R1 fill:#111827,stroke:#00EC97,stroke-width:2px,color:#fff
-    style R2 fill:#111827,stroke:#F43F5E,stroke-width:2px,color:#fff
-    style R3 fill:#111827,stroke:#F59E0B,stroke-width:2px,color:#fff
+    subgraph S2["2. Ingestion & Early-Exit Sieve"]
+        direction TB
+        FN["FastNEAR Block Ingestion<br/>Reads execution outcomes with tx_hash"]
+        FILTER{"Subscription Sieve<br/>Matches your contract?"}
+        DROP["Discard 95%+ Noise<br/>(Spam, meme tokens, bots)"]
+        FN --> FILTER
+        FILTER -- "No Match" --> DROP
+    end
+
+    subgraph S3["3. Dynamic DAG Stitcher (The Engine)"]
+        direction TB
+        subgraph DAG["Dynamic Receipt Dependency Graph"]
+            direction LR
+            R0["R0: intents.near<br/>Initial Call"] -->|"Spawns"| R1["R1: usdc.near<br/>ft_transfer_call"]
+            R1 -->|"Spawns"| R2["R2: merchant.near<br/>Panics / Fails"]
+            R1 -.->|"Callback"| R3["R3: usdc.near::resolve<br/>Refunds Sender"]
+            R2 ==>|"Error Input"| R3
+        end
+        PRUNE["Prune Gas Change Receipts<br/>(Drops system gas refunds → saves 1.1s)"]
+        CHECK{"Completeness Check<br/>Spawned − Executed = 0?"}
+        HOLD["Buffer in Hot Memory<br/>(Wait for remaining shards)"]
+        
+        DAG --> PRUNE --> CHECK
+        CHECK -- "Pending" --> HOLD
+    end
+
+    subgraph S4["4. Settlement & Attestation"]
+        direction TB
+        SETTLE["Dual-Axis Settlement Evaluator<br/>• protocol_status: SUCCESS<br/>• business_status: REFUNDED"]
+        NORM["Clearinghouse Normalizer<br/>Decodes DIP-4 token diffs & MPC signatures"]
+        SIGN["Ed25519 Attestation Engine<br/>Signs canonical payload with relayer key"]
+        SETTLE --> NORM --> SIGN
+    end
+
+    subgraph S5["5. Delivery Targets (Who Receives It)"]
+        direction LR
+        subgraph T1["Target A: Cloud Webhooks"]
+            WH["HTTPS POST Webhook<br/>(Exponential retry + circuit breaker)"] --> CLD["Cloud Backends<br/>Next.js • FastAPI • AWS Lambda"]
+        end
+        subgraph T2["Target B: Local Developer CLI"]
+            WS["WebSocket Tunnel Hub"] --> CLI["npx nearhook listen"] --> LOC["http://localhost:3000<br/>(Zero-config, no ngrok)"]
+        end
+        subgraph T3["Target C: Autonomous AI Agents"]
+            AI["Wakeup Webhook"] --> AGT["Sleeping AI Agents<br/>ElizaOS • LangChain<br/>($0 idle compute cost)"]
+        end
+    end
+
+    S1 ==>|"Block Chunks"| FN
+    FILTER -- "Subscribed Match" --> DAG
+    CHECK -- "Settled (Remaining = 0)" --> SETTLE
+    SIGN ==>|"Attested Webhook Payload"| S5
+
+    style S1 fill:#111827,stroke:#00EC97,stroke-width:1px,color:#fff
+    style S2 fill:#111827,stroke:#F59E0B,stroke-width:1px,color:#fff
+    style S3 fill:#0B0F17,stroke:#9945FF,stroke-width:2px,color:#fff
+    style S4 fill:#111827,stroke:#3B82F6,stroke-width:1px,color:#fff
+    style S5 fill:#0B0F17,stroke:#00EC97,stroke-width:2px,color:#fff
+    style DAG fill:#1F2937,stroke:#A855F7,stroke-width:1px,color:#fff
+    style T1 fill:#111827,stroke:#3B82F6,stroke-width:1px,color:#fff
+    style T2 fill:#111827,stroke:#F59E0B,stroke-width:1px,color:#fff
+    style T3 fill:#111827,stroke:#10B981,stroke-width:1px,color:#fff
+    style DROP fill:#374151,stroke:#6B7280,stroke-width:1px,color:#9CA3AF
+    style HOLD fill:#374151,stroke:#6B7280,stroke-width:1px,color:#9CA3AF
 ```
 
-### 1. The Completeness Rule: When is a Transaction Truly Done?
-On NEAR, you cannot predict how many receipts a transaction will generate before it runs. Receipt $R_0$ might spawn $R_1$, and only when $R_1$ executes does it spawn $R_2$.
+### 1. Assembling the Puzzle Dynamically (Zero Hardcoding)
+On NEAR, you cannot predict what a transaction will do before it runs. A smart contract's internal code (`if/else`, market liquidity, price checks) decides on the spot whether to spawn 0, 2, or 5 follow-up calls across different shards.
 
-NearHook solves this with a simple, rock-solid rule:
-* **Spawned Receipts:** NearHook registers every child promise and callback spawned by incoming receipts.
-* **Executed Receipts:** NearHook marks receipts off as their execution outcomes arrive from shard blocks.
-* **Terminal Settlement:** A transaction is only settled when **every spawned receipt has executed** (`Remaining = Spawned − Executed = ∅`). Only then does NearHook package and sign the final webhook.
+**NearHook never hardcodes expected paths or contract names.** Instead, it dynamically follows the trail of receipts as they appear on the blockchain:
+* **The Steps (Nodes):** Every receipt execution that lands on any shard tells NearHook: *"Here is what I just did, whether I succeeded or failed, and what new child receipts I spawned."*
+* **The Connections (Edges):** If Receipt A spawns Receipts B and C, NearHook links them together as parent and children.
+* **The Follow-ups (Callbacks):** If a contract sets up a safety refund callback (like `ft_resolve_transfer`), NearHook marks it to wait for the child call's result.
+* **Chronological Assembly:** Once all follow-up steps have finished, NearHook reads the events in the exact order they happened, confirms whether money actually moved, and creates one simple, final story.
 
-### 2. The 1-Block Latency Win: Pruning "Gas Change" Receipts
+### 2. Who Collects From This Receipt Tree?
+Developers and AI agents **never have to deal with the complex receipt tree directly**. The tree is strictly an internal assembly line inside NearHook.
+
+The moment the tree completes, NearHook's **Dispatcher** packages the final story into a clean, human-readable JSON message and delivers it to:
+
+1. **Your Cloud Backend (HTTPS POST):** Sent to your serverless functions or microservices (Next.js, FastAPI, Express, AWS Lambda).
+2. **Your Local Laptop (`npx nearhook listen`):** Forwarded directly to `localhost:3000` while you develop and test locally, with zero setup and no ngrok.
+3. **Autonomous AI Agents:** Delivered to AI agent frameworks (ElizaOS, LangChain), waking sleeping agents up only when a verified transaction arrives ($0 idle compute cost).
+
+### 3. The Completeness Rule: When is a Transaction Truly Done?
+Because receipt trees unfold dynamically, NearHook tracks two dynamic sets in memory:
+* **Spawned Receipts ($S_{\text{spawned}}$):** Every child promise and callback dynamically registered by executed receipts.
+* **Executed Receipts ($S_{\text{executed}}$):** Every receipt that has finished execution on its respective shard.
+* **Terminal Settlement:** A transaction is only settled when **every spawned receipt has executed** (`Remaining = Spawned − Executed = ∅`) AND the root transaction has been recorded. Only then does NearHook package and sign the final webhook.
+
+### 4. The 1-Block Latency Win: Pruning "Gas Change" Receipts
 On NEAR, every smart contract call attaches extra gas (e.g. 30 TGas for a 4 TGas call). When the call finishes, the NEAR runtime automatically generates a child receipt from `"system"` to return the unspent gas back to the user's wallet.
 
 * **The Problem with Naive Indexers:** Waiting for that trivial gas refund receipt adds **1 full block of artificial latency (~1.1 seconds)** to every single transaction.
 * **NearHook's Optimization:** NearHook inspects child receipts in real time. If a child receipt is purely returning unspent gas from `"system"`, NearHook prunes it from the dependency tree immediately. Your webhook fires **1 full block faster (~1.1s latency shaved off)** without sacrificing any safety.
 
-### 3. Understanding Business Outcomes: Gas Change vs. Real Refunds
+### 5. Understanding Business Outcomes: Gas Change vs. Real Refunds
 NearHook makes a sharp distinction between two fundamentally different types of refunds:
 
 | Attribute | System Gas Refund ("Gas Change") | Business Refund (`ft_resolve_transfer`) |
@@ -175,12 +253,12 @@ NearHook makes a sharp distinction between two fundamentally different types of 
 
 When a contract callback like `ft_resolve_transfer` handles a failure and returns tokens to the sender, NearHook marks the payload's `business_status` as `REFUNDED` instead of reporting a false success.
 
-### 4. Early-Exit Sieve: Filtering 95%+ of Network Noise
+### 6. Early-Exit Sieve: Filtering 95%+ of Network Noise
 NEAR processes hundreds of receipts per second across thousands of unrelated contracts (games, meme tokens, bot claims). 
 
 NearHook uses a high-speed in-memory subscription sieve. Transactions that do not touch your subscribed contracts or registered cross-chain clearinghouses (`intents.near`, `v1.signer`) are discarded immediately. This keeps NearHook's memory footprint tiny and ensures sub-millisecond webhook routing.
 
-### 5. Architectural Foundations: Built on Proven Systems
+### 7. Architectural Foundations: Built on Proven Systems
 NearHook's receipt stitcher isn't an ad-hoc script—it is the direct application of three battle-tested industry foundations:
 
 ```mermaid
