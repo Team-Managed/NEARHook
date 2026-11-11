@@ -1,6 +1,6 @@
 # NearHook Domain Glossary
 
-This glossary defines core domain terminology for NearHook and its interactions with NEAR Protocol, omnichain intents, and receipt execution DAGs.
+This glossary defines core domain terminology for NearHook, NEAR Protocol's asynchronous execution model, and clearinghouse integrations.
 
 ---
 
@@ -12,41 +12,43 @@ The atomic asynchronous message packet on NEAR Protocol. A transaction submitted
 #### ExecutionOutcomeWithId
 The outcome of executing a receipt on a specific shard at a specific block height. It contains:
 - `receipt_ids`: Array of new receipt IDs spawned by this receipt (child promises).
-- `status`: Execution status, which can be `SuccessReceiptId`, `SuccessValue`, or `Failure(ActionError)`.
-- `logs`: Array of UTF-8 log strings emitted by the smart contract during execution.
-- `gas_burnt`: Gas consumed during this execution step.
+- `status`: Execution status (`SuccessReceiptId`, `SuccessValue`, or `Failure`).
+- `logs`: Array of UTF-8 log strings emitted during execution (e.g. `EVENT_JSON:`).
+- `gas_burnt`: Gas consumed during execution.
 
-#### Directed Acyclic Graph (DAG) of Receipts ($G_T = (V_T, E_T)$)
-The full execution graph of a NEAR transaction $T$:
-- **Vertices ($V_T$):** Each vertex is a receipt execution outcome (`ExecutionOutcomeNode`).
-- **Edges ($E_T$):** Directed dependency edges $(v_i, v_j)$ where receipt $v_i$ spawned child receipt $v_j$ via cross-contract calls.
+#### Receipt Dependency Graph ($G_T = (V_T, E_T)$)
+The causal execution graph of a NEAR transaction $T$:
+- **Vertices ($V_T$):** Each vertex is a receipt execution outcome (`ReceiptExecution`).
+- **Edges ($E_T$):** Directed causal dependencies, distinguishing promise spawns ($E_{\text{spawn}}$) from callback dependencies ($E_{\text{callback}}$).
 
 #### Optimistic Settlement Vulnerability
-A critical correctness vulnerability where an indexer or listener triggers an off-chain callback or releases funds upon observing a parent receipt success at block $B_t$, unaware that a child cross-contract promise will panic at block $B_{t+1}$ and trigger a protocol refund at block $B_{t+2}$.
+A correctness vulnerability where an indexer or listener triggers an off-chain callback or releases funds upon observing a parent receipt success at block $B_t$, unaware that a child cross-contract promise will fail at block $B_{t+1}$ and trigger a refund callback at block $B_{t+2}$.
 
-#### Stitching Completeness Invariant
-$$\Delta(T) = S_{\text{spawned}}(T) \setminus S_{\text{executed}}(T) = \emptyset$$
-The strict mathematical condition where the set difference between all spawned receipt IDs and all observed execution outcomes is empty. NearHook holds all partial state in hot memory and strictly forbids dispatching a webhook until this invariant is satisfied.
+#### Terminal Resolution Condition
+The state where:
+1. The root receipt has executed.
+2. Every discovered child promise has executed.
+3. Every registered callback has executed.
+4. The block heights of all constituent receipts are confirmed in the indexer's contiguous checkpoint log.
 
-#### True Terminal Status
-The finalized execution status of a stitched transaction DAG:
-- `SUCCESS`: All execution outcomes succeeded without panic or refund.
-- `FAILED_OR_REFUNDED`: Any node in the primary receipt tree resulted in an `ActionError`, panic, or spawned a refund receipt (`predecessor_id == "system"` or `ft_resolve_transfer`).
+#### Protocol Status vs. Business Status
+- **Protocol Status:** Technical runtime result of the receipt execution graph (`SUCCESS` vs unhandled runtime panic `FAILURE`).
+- **Business Status:** Application-level settlement outcome (e.g. `CONFIRMED` payment vs `REFUNDED` payment detected via `ft_resolve_transfer` callback return value and `NEP-297` transfer logs).
 
-#### Omnichain Clearinghouse
-Decentralized contracts on NEAR that settle state and transactions across 35+ foreign blockchains:
+#### Contract Callback / Resolver (`ft_resolve_transfer`)
+In NEAR's NEP-141 standard, when `ft_transfer_call` invokes `ft_on_transfer` on a recipient, it registers `ft_resolve_transfer` as a contract callback. If the recipient panics, the callback executes, inspects `env::promise_result(0)`, returns unused tokens to the sender, and emits refund events. The callback itself succeeds at the protocol level while representing a refund at the business level.
+
+#### NEAR Clearinghouses
+Decentralized contracts on NEAR that settle multi-chain state:
 - `intents.near`: NEAR Intents Verifier executing cross-chain asset swaps and withdrawals via the DIP-4 / NEP-297 event standard.
-- `v1.signer`: NEAR Threshold Multi-Party Computation (MPC) contract generating decentralized threshold signatures (Secp256k1 for EVM/BTC, Ed25519 for Solana/TON).
+- `v1.signer`: Threshold Multi-Party Computation (MPC) contract generating decentralized threshold signatures (Secp256k1 for EVM/BTC, Ed25519 for Solana/TON).
 
-#### DIP-4 / NEP-297
-Standardized event logging specification on NEAR. Events are emitted as JSON in contract execution logs with prefix `EVENT_JSON:{"standard":"dip4", ...}`.
+#### NEP-297 & DIP-4
+- **NEP-297:** The official NEAR Event Standard specifying structured JSON logs prefixed with `EVENT_JSON:`.
+- **DIP-4:** Decentralized Intent Protocol standard identifier used within NEP-297 (`standard: "dip4"`) for intent state transitions and token diffs.
 
-#### Omni-Bridge Token (`*.omft.near`)
-Multi-Token (`NEP-245`) representations of foreign chain assets bridged to NEAR (e.g. `nep141:sol.omft.near`, `nep141:btc.omft.near`, `nep141:base-0x8335...omft.near`).
+#### Public Key Pinning
+A security requirement where webhook receivers verify signatures against a pre-configured or pinned public key from NearHook, rejecting dynamically supplied public keys in HTTP headers to prevent relayer spoofing.
 
-#### Cryptographic Attestation
-The asymmetric Ed25519 cryptographic signature generated by NearHook's relayer over canonical message $M = \tau \parallel "." \parallel B$, allowing any third-party receiver or AI agent to statelessly verify authenticity in $<0.2\text{ms}$ without RPC calls.
-
-#### Tracer Bullet
-A narrow, complete vertical slice of functionality cutting across all application layers (types, domain logic, I/O storage, and tests) that is demonstrable and testable the moment it lands.
-
+#### Event Idempotency Key
+The unique `X-NearHook-Id` used by webhook receivers to track delivered events and reject replays of valid payloads within the timestamp tolerance window.
