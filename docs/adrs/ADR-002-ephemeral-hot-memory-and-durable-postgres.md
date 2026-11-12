@@ -29,6 +29,16 @@ We implement a **Checkpointed Ingestion Worker with Two-Tier Storage**:
    - `deliveries`: Stitched canonical JSON payloads (`payload` JSONB column), HTTP delivery status codes, latency measurements, and retry counts.
    - Circuit breaker state (`ACTIVE`, `PAUSED_UNHEALTHY`).
 
+## Quantified Numbers & Storage Parameters
+| Parameter | Value | Specification Details |
+| :--- | :--- | :--- |
+| **In-Flight Memory TTL** | `120 seconds` | Ephemeral Redis key lifespan; automatically reclaims memory if a transaction drops. |
+| **Average In-Flight Lifespan** | `1.2s – 2.4s` | Normal time for a 2–4 block multi-shard DAG to fully resolve before eviction. |
+| **Retry Backoff Schedule** | `1s, 3s, 9s, 27s, 81s` | 5-step exponential backoff with $\pm 20\%$ random jitter (total window: ~121s). |
+| **Circuit Breaker Threshold** | `10 consecutive failures` | Automatically trips subscription to `PAUSED_UNHEALTHY` to preserve relayer capacity. |
+| **Circuit Breaker Error Rate** | `> 95% over 50 calls` | Proportional trip criteria for flaky endpoints. |
+| **Historical Replay Window** | `30 days` | Durable PostgreSQL JSONB archive retention for gas-free event replay. |
+
 ## Consequences
 - **Positive:**
   - Guaranteed contiguous block processing without missing cross-shard chunks.
