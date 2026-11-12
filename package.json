@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "nearhook": "node packages/cli/dist/bin/nearhook.js",
     "build": "pnpm -r run build",
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck"

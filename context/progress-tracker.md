@@ -1,8 +1,8 @@
 # NearHook: Progress Tracker
 
 ## 1. Project State & Phase
-- **Current Phase:** Phase 1 (Core Domain Engine `@nearhook/core`) in progress.
-- **Workflow Status:** Tickets 01, 02, 03, and 04 completed with 27 passing deterministic unit tests (`pnpm test`).
+- **Current Phase:** Phase 1 (Core Domain Engine `@nearhook/core`) & Developer CLI (`@nearhook/cli`) completed.
+- **Workflow Status:** Tickets 01, 02, 03, 04, and 06 completed with 37 passing deterministic unit tests across 6 test suites (`pnpm test`). README polished for hackathon presentation with live terminal TUI, competitive matrix, and judge reproducibility steps.
 
 ## 2. Completed Milestones
 
