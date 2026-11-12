@@ -1,41 +1,44 @@
 # NearHook: Progress Tracker
 
 ## 1. Project State & Phase
-- **Current Phase:** Phase 0 (Design & Architecture) completed $\rightarrow$ Transitioning to Phase 1 (Core Domain Engine).
-- **Whitepaper Status:** Canonical v2.7 released (`whitepaper.md`).
+- **Current Phase:** Phase 1 (Core Domain Engine `@nearhook/core`) in progress.
+- **Workflow Status:** Tickets 01, 02, and 03 completed with 18 passing deterministic unit tests (`pnpm test`).
 
 ## 2. Completed Milestones
 
 ### Documentation & Specifications
-- [x] `whitepaper.md` (v2.7): Comprehensive, simplified whitepaper with:
-  - The QuickNode vs NearHook core distinction and 5-step demo flow.
-  - Master end-to-end architecture diagram including PostgreSQL & Developer Dashboard.
-  - Two-Way Webhooks via native NEAR `yield_create` and `yield_resume`.
-  - Developer Tooling: `nearhook listen` & `nearhook trigger` (The Stripe CLI for NEAR).
-  - Agent-Safe Mode: Prompt injection defense & dust filtering for autonomous AI agents.
-  - Standardized Settlement Adapters (`NEP-141`, `NEP-245`, `DIP-4`, `v1.signer`).
-  - Updated block times (~600ms) and FastNEAR real-time pipeline.
+- [x] `README.md`: Canonical open-source and hackathon documentation with badges, architecture diagrams, QuickNode comparison, CLI quickstart, dashboard wireframe, and Two-Way Webhooks.
+- [x] `LICENSE`: MIT License.
+- [x] `whitepaper.md` (v2.7): Comprehensive, simplified whitepaper.
 - [x] `docs/GLOSSARY.md`: Complete domain terminology.
-- [x] `docs/adrs/ADR-001-modular-monorepo-architecture.md`: pnpm workspace structure.
-- [x] `docs/adrs/ADR-002-ephemeral-hot-memory-and-durable-postgres.md`: FastNEAR ingestion + two-tier storage (Redis 120s TTL + PostgreSQL/NeonDB).
-- [x] `docs/adrs/ADR-003-ed25519-stateless-attestation.md`: Cryptographic attestation with public key pinning & event-ID idempotency deduplication.
-- [x] `docs/specs/2026-11-11-nearhook-spec.md`: Detailed engineering specification.
+- [x] `docs/specs/2026-11-11-nearhook-spec.md` (v2.0): Formal engineering specification.
 
-### Architecture & Optimization Decisions
-- [x] **FastNEAR `tx_hash` Integration:** Verified FastNEAR Neardata injects `tx_hash` into `receipt_execution_outcomes`.
-- [x] **Root-Registered Completion Guard:** Enforces `root_registered == 1` before evaluating the set-difference completeness trigger.
-- [x] **System Gas Refund Pruning:** Shaves ~600ms (1 full block roundtrip) off delivery by pruning pure system gas refunds.
-- [x] **Standardized Settlement Adapters:** Explicitly models NEP-141, NEP-245, and DIP-4 business refund conditions.
-- [x] **Two-Way Hooks Architecture:** Leverages NEAR native `yield_create` and `yield_resume` to enable smart contracts to await webhook responses.
-- [x] **Agent-Safe Mode:** Shields autonomous agents against prompt injection and dust token exhaustion.
-- [x] **Real-Time Connecting Pipeline:** Formally documented the 4-channel pipeline connecting FastNEAR shard ingestion, live Server-Sent Events (SSE) to the Temporal-style dashboard canvas, PostgreSQL durable persistence, and WebSocket tunneling to `localhost:3000`.
+### Architectural Decision Records (ADRs)
+- [x] `ADR-001`: Modular Monorepo Architecture (`pnpm` workspaces).
+- [x] `ADR-002`: Ephemeral Hot Memory (Redis 120s TTL) & Durable PostgreSQL.
+- [x] `ADR-003`: Ed25519 Stateless Cryptographic Attestation & Key Pinning.
+- [x] `ADR-004`: Two-Way Webhooks via Native NEAR `yield_create` and `yield_resume`.
+- [x] `ADR-005`: Agent-Safe Mode and Prompt Injection Quarantine (`untrusted_metadata`).
+- [x] `ADR-006`: Standardized Settlement Adapters (`NEP-141`, `NEP-245`, `DIP-4`) & Canned CLI Triggers.
+- [x] `ADR-007`: Reference Demo Smart Contracts (`merchant-escrow` & `two-way-hook`) & Pre-compiled Bytecode Distribution.
+- [x] `ADR-008`: Hybrid Developer CLI Tunnel Architecture & Interactive Terminal TUI.
+- [x] `ADR-009`: Tri-State Settlement Semantics (`CONFIRMED` / `REFUNDED` / `PARTIALLY_REFUNDED`) & Granular Diagnostic Block.
+- [x] `ADR-010`: Hybrid Ingestion Pipeline (WebSocket Push with Checkpointed Gap Detection).
+- [x] `ADR-011`: Hosted Relayer for Autonomous Two-Way Webhook Resumption.
+- [x] `ADR-012`: Dual-Level Agent-Safe Enforcement (Gateway & Local CLI).
+- [x] `ADR-013`: Type Architecture (Branded TypeScript Primitives & Boundary Zod Validation).
+- [x] `ADR-014`: Pure In-Memory DAG Stitcher Engine, Dynamic Completeness Resolution, and Gas Refund Pruning.
 
-## 3. Next Steps (Phase 1: `@nearhook/core`)
-- [ ] Initialize monorepo workspace configuration (`pnpm-workspace.yaml`, `package.json`, `tsconfig.json`).
-- [ ] Define core TypeScript domain types (`ReceiptId`, `TxHash`, `ExecutionOutcomeNode`, `StitchedReceiptTree`, `CanonicalWebhookPayload`).
-- [ ] Implement pure Receipt DAG Stitcher with gas refund pruning and root guard invariant.
-- [ ] Implement NEP-141, NEP-245, and DIP-4 settlement adapters.
-- [ ] Implement `nearhook trigger` canned event generator for local testing.
-- [ ] Implement native Node.js Ed25519 signer and verifier (`node:crypto`).
-- [ ] Comprehensive unit tests verifying real multi-shard DAG permutations without hardcoded outputs or mock bypasses.
+### Implementation Tickets (`docs/tickets/`)
+- [x] **Ticket 01: Monorepo Setup & Core Domain Types** (Completed: `pnpm-workspace.yaml`, `tsconfig.base.json`, `packages/core/src/types/domain.ts`).
+- [x] **Ticket 02: Pure DAG Stitcher & Gas Refund Pruning Engine** (Completed: `packages/core/src/stitcher/dag.ts`, unit tests in `packages/core/test/dag.test.ts`).
+- [x] **Ticket 03: Settlement Adapters & Omnichain DIP-4 Parser** (Completed: `packages/core/src/adapters/nep141.ts`, `packages/core/src/adapters/dip4.ts`, `packages/core/src/evaluator/settlement.ts`, 18 deterministic unit tests passing in `packages/core/test/settlement.test.ts`).
+- [ ] `Ticket 04`: Ed25519 Attestation & Agent-Safe Mode Sanitizer.
+- [ ] `Ticket 05`: Canned Scenario Generator & CLI Trigger Driver.
+- [ ] `Ticket 06`: Developer CLI Tunnel Listener (`nearhook listen`).
+- [ ] `Ticket 07`: FastNEAR Ingestion Poller & Durable Storage.
+- [ ] `Ticket 08`: Temporal-Style Web Dashboard & SSE Live Stream.
+- [ ] `Ticket 09`: Reference Demo Smart Contracts (Merchant Escrow & Two-Way Yield).
 
+## 3. Next Step (Execution)
+- Paused per user instruction at Ticket 03 milestone. Ready for **Ticket 04** (Ed25519 cryptographic attestation & Agent-Safe mode sanitizer in `packages/core`).

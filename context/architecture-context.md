@@ -93,3 +93,19 @@ If an external endpoint fails $\ge 10$ consecutive deliveries or maintains a fai
   - `attempt_count`: int
   - `latency_ms`: int nullable
   - `created_at`: timestamptz
+
+## 4. Reference Demo Smart Contracts (`packages/contracts/`)
+
+To support live hackathon judge demonstrations and testnet verification, the monorepo houses reference smart contracts:
+
+1. **`mock-store` (`packages/contracts/mock-store`):**
+   - Implements standard NEP-141 receiver `ft_on_transfer(sender_id, amount, msg)`.
+   - Simulates inventory states: if `msg` specifies out-of-stock, panics or returns the full amount to trigger `ft_resolve_transfer` refund.
+   - Deployed reference account: `mock-store.testnet`.
+
+2. **`two-way-hook` (`packages/contracts/two-way-hook`):**
+   - Demonstrates NEAR's native `yield_create` and `yield_resume` host functions.
+   - Calls `env::promise_yield_create`, emits an event with the `yield_token`, and pauses for up to 200 blocks.
+   - Resumes state via `env::promise_yield_resume(yield_token, payload)` when NearHook delivers the off-chain API response.
+   - Deployed reference account: `two-way-hook.testnet`.
+
