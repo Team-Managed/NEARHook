@@ -6,9 +6,10 @@ async fn create_subaccount(
     sandbox: &near_sandbox::Sandbox,
     name: &str,
 ) -> testresult::TestResult<near_api::Account> {
+    let sandbox_account_id: near_sdk::AccountId = name.parse()?;
     let account_id: AccountId = name.parse()?;
     sandbox
-        .create_account(account_id.clone())
+        .create_account(sandbox_account_id)
         .initial_balance(NearToken::from_near(10))
         .send()
         .await?;
@@ -20,7 +21,7 @@ async fn deploy(
     near_sandbox::Sandbox,
     NetworkConfig,
     Contract,
-    Signer,
+    std::sync::Arc<Signer>,
     near_api::Account,
     near_api::Account,
 )> {
@@ -120,7 +121,9 @@ async fn authorized_responder_resumes_yield_and_callback_clears_state()
         .await?
         .assert_success();
 
-    tokio::time::timeout(Duration::from_secs(30), pending_task).await???;
+    tokio::time::timeout(Duration::from_secs(30), pending_task)
+        .await???
+        .assert_success();
     let pending_after: Option<Value> = contract
         .call_function("get_pending_action", json!({ "request_id": 0 }))
         .read_only()
@@ -148,7 +151,9 @@ async fn timed_out_yield_clears_pending_state()
     let pending = wait_for_pending_action(&contract, &network, 0).await?;
     assert_eq!(pending["action_id"], "wait-for-timeout");
     sandbox.fast_forward(210).await?;
-    tokio::time::timeout(Duration::from_secs(30), pending_task).await???;
+    tokio::time::timeout(Duration::from_secs(30), pending_task)
+        .await???
+        .assert_success();
 
     let pending_after: Option<Value> = contract
         .call_function("get_pending_action", json!({ "request_id": 0 }))

@@ -217,3 +217,44 @@ impl Contract {
         env::log_str(&format!("EVENT_JSON:{event}"));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use near_sdk::test_utils::{VMContextBuilder, accounts};
+    use near_sdk::testing_env;
+
+    fn set_predecessor(predecessor: AccountId) {
+        let mut context = VMContextBuilder::new();
+        context
+            .current_account_id(accounts(0))
+            .signer_account_id(predecessor.clone())
+            .predecessor_account_id(predecessor);
+        testing_env!(context.build());
+    }
+
+    #[test]
+    fn owner_can_change_the_responder() {
+        set_predecessor(accounts(1));
+        let mut contract = Contract::new(accounts(1), accounts(2));
+        contract.set_responder_id(accounts(3));
+        assert_eq!(contract.get_responder_id(), accounts(3));
+    }
+
+    #[test]
+    #[should_panic(expected = "Only the contract owner may update the responder")]
+    fn non_owner_cannot_change_the_responder() {
+        set_predecessor(accounts(2));
+        let mut contract = Contract::new(accounts(1), accounts(2));
+        contract.set_responder_id(accounts(3));
+    }
+
+    #[test]
+    fn init_sets_the_owner_and_authorized_responder() {
+        set_predecessor(accounts(1));
+        let contract = Contract::new(accounts(1), accounts(2));
+        assert_eq!(contract.owner_id, accounts(1));
+        assert_eq!(contract.get_responder_id(), accounts(2));
+        assert_eq!(contract.next_request_id, 0);
+    }
+}
