@@ -1,4 +1,4 @@
-# ADR-006: Standardized Settlement Adapters and Canned CLI Triggers
+# ADR-006: Standardized Settlement Adapters and Captured Receipt Replay
 
 ## Status
 Accepted
@@ -12,15 +12,15 @@ Accepted
    - `NEP-141 Adapter`: Evaluates `ft_transfer_call` $\rightarrow$ `ft_on_transfer` $\rightarrow$ `ft_resolve_transfer`. Inspects the integer return value of `ft_resolve_transfer` and `ft_transfer` logs to determine tokens returned.
    - `NEP-245 Adapter`: Evaluates `mt_transfer_call` and `mt_resolve_transfer` batch returns.
    - `DIP-4 Adapter`: Parses NEP-297 `token_diff` logs from `intents.near` to verify cross-chain asset swaps.
-2. **Canned CLI Trigger Engine (`nearhook trigger`):**
-   - The developer CLI ships with pre-recorded, canonical multi-shard receipt DAGs:
-     - `payment.succeeded`: Normal 2-block confirmation.
-     - `payment.refunded`: 3-block sequence with `ft_on_transfer` panic and `ft_resolve_transfer` refund.
-     - `intent.settled`: DIP-4 multi-token diff settlement.
-   - `nearhook trigger` executes the real in-memory DAG engine in-process and emits the signed webhook directly to the local forward target (`localhost:3000`) with 0 network latency and 0 gas cost.
+2. **Captured Receipt Replay (`nearhook trigger`):**
+   - Complete the reference-contract work in Ticket 09 first and capture receipt traces from actual Testnet transactions.
+   - Store versioned fixtures with transaction provenance. Do not invent receipt outcomes or encode expected business statuses in the CLI.
+   - `nearhook trigger --fixture <path>` replays the captured outcomes through the real in-memory DAG engine and emits an explicitly marked test payload. Replay itself requires no RPC calls or gas.
+   - Synthetic receipt data is allowed in unit-test setup only; those tests must run the real core evaluator and label the data synthetic.
 
 ## Consequences
 - **Positive:** Honest, rigorous protocol modeling. Demonstrates deep understanding of NEAR standards rather than hand-waving claims.
-- **Positive:** World-class developer experience. Allows automated CI tests and developers to test refund handlers in 5 seconds.
-- **Positive:** 100% reliable hackathon demo that cannot fail due to testnet congestion.
+- **Positive:** Developers can repeatedly test handlers against a real captured trace without waiting for Testnet.
+- **Positive:** CI can validate settlement logic with small, explicitly synthetic unit-test inputs without presenting them as live transactions.
+- **Negative:** The first integration traces require the reference contract to be built and exercised on Testnet.
 
