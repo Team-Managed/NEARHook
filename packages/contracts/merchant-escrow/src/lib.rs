@@ -32,7 +32,7 @@ impl Contract {
             return amount;
         }
 
-        let parsed_message = serde_json::from_str::<TransferMessage>(&msg);
+        let parsed_message = near_sdk::serde_json::from_str::<TransferMessage>(&msg);
         let (unused_amount, reason, item_id) = match parsed_message {
             Ok(message) if message.simulate_refund => {
                 (amount.0, "simulated_refund", Some(message.item_id))
