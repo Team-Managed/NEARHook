@@ -147,7 +147,7 @@ This distinction is demonstrated in 5 simple steps:
 1. **Open NearHook:** Create a subscription for `mock-store.testnet` (reference contract in `packages/contracts/mock-store`).
 2. **Set Destination:** Point to `http://localhost:3000/webhook`.
 3. **Start Local Listener:** Run `npx nearhook listen --forward http://localhost:3000/webhook`.
-4. **Trigger Payment:** Run `npx nearhook trigger payment.refunded` (or execute the real on-chain call: `near contract call-function as-transaction usdc.fakes.testnet ft_transfer_call ...`).
+4. **Capture and Replay:** Exercise the reference merchant contract on Testnet once, save its receipt trace with transaction provenance, then replay that trace with `npx nearhook trigger --fixture fixtures/merchant-escrow/refund.json`.
 5. **The Visual Contrast:** Show NearHook absorbing 4 noisy, fragmented receipt events across multiple shards in real time, but delivering **exactly one clean, settlement-aware webhook** indicating `business_status: REFUNDED`.
 
 ```mermaid
@@ -527,10 +527,8 @@ Just like Stripe revolutionized payments development with the Stripe CLI, NearHo
 # 1. Stream live events straight to your local server (no ngrok required)
 npx nearhook listen --account "*.myapp.near" --forward http://localhost:3000/api/webhook
 
-# 2. Trigger canned scenarios locally in 5 seconds (zero testnet gas needed)
-npx nearhook trigger payment.succeeded
-npx nearhook trigger payment.refunded
-npx nearhook trigger intent.settled
+# 2. Replay a receipt trace captured from the reference contract (no new testnet transaction)
+npx nearhook trigger --fixture fixtures/merchant-escrow/refund.json
 ```
 
 ```mermaid
@@ -550,7 +548,7 @@ sequenceDiagram
 ```
 
 * **Zero-Config Tunneling:** Uses an outbound WebSocket connection to bypass Wi-Fi firewalls and NAT without port-forwarding.
-* **Instant Canned Triggers:** `nearhook trigger` injects pre-packaged real-world payloads directly into your listener, letting developers build and test refund handlers in seconds without waiting for testnet faucets.
+* **Receipt Trace Replay:** `nearhook trigger --fixture <path>` replays a provenance-bearing trace captured from a real reference-contract transaction through the real core engine. The emitted webhook is marked as test data; replay makes no chain or RPC calls.
 * **1-Click Free Replay:** If your local server crashes during debugging, click **Replay** in the dashboard to re-send the exact payload without paying gas on NEAR.
 
 ---
@@ -678,6 +676,6 @@ When a cross-chain swap or intent settles on NEAR, your backend or AI agent rece
 | **Two-Way Webhooks** | ❌ No. One-way push only | ❌ No | ✅ **Yes.** Smart contracts await API replies via `yield/resume` |
 | **AI Agent Protection** | ❌ None. Passes raw prompt-injection strings | ❌ None | ✅ **Agent-Safe Mode.** Schema quarantine & dust sieve |
 | **Local Developer Tunnel**| ❌ Impossible without ngrok | ❌ Impossible without custom proxies | ✅ **Built-in (`npx nearhook listen`)** |
-| **Testing Experience** | Requires testnet faucets & manual transactions | Requires parsing multi-megabyte JSON | ✅ **Instant (`npx nearhook trigger`)** |
+| **Testing Experience** | Requires repeating testnet transactions | Requires parsing multi-megabyte JSON | ✅ **Replay captured traces offline (`nearhook trigger --fixture`)** |
 | **Historical Replay** | Re-run on-chain transactions and pay gas | Re-read raw historical archive blocks | ✅ **1-Click Free Replay** from durable JSONB logs |
 | **Compute Cost** | Pay per webhook / request quota | Pay 24/7 for servers running polling loops | ✅ **$0 idle cost.** Serverless & agents wake on demand |

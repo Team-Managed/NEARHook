@@ -75,7 +75,7 @@ sequenceDiagram
 | **Settlement Semantics** | **Blind.** Fires on Receipt 1; ignores subsequent refunds | **Settlement-Aware.** Holds dispatch until full multi-shard DAG resolves |
 | **Refund Detection** | ❌ None (Sends false-positive payment events) | ✅ **Automatic.** Explicitly reports `CONFIRMED` vs `REFUNDED` |
 | **Local Development** | ❌ Impossible without ngrok or cloud proxies | ✅ **Built-in (`npx nearhook listen`)** |
-| **Local Testing** | ❌ Must deploy contracts and use testnet faucets | ✅ **Instant (`npx nearhook trigger`)** |
+| **Local Testing** | ❌ Must repeat contract calls and wait for chain execution | ✅ **Replay captured receipt traces offline** |
 | **Two-Way Webhooks** | ❌ One-way outbound push only | ✅ **Yes.** Contracts await HTTP responses via `yield/resume` |
 | **AI Agent Defense** | ❌ Passes raw prompt injection strings & dust spam | ✅ **Agent-Safe Mode.** Quarantines memos & filters dust |
 | **Historical Replay** | ❌ Must re-run on-chain transactions and pay gas | ✅ **1-Click Free Replay** from durable JSONB archive |
@@ -94,40 +94,36 @@ Forward live events directly into your local development server:
 npx nearhook listen --account "merchant.near" --forward http://localhost:3000/api/webhook
 ```
 
-### 2. Trigger Real-World Scenarios (No testnet gas needed)
-Test your refund handling locally in 5 seconds:
+### 2. Replay a Captured Receipt Trace (No new testnet transaction needed)
+After completing Ticket 09 and capturing a reference-contract transaction, replay that exact receipt trace locally:
 
 ```bash
-# Test a successful payment
-npx nearhook trigger payment.succeeded
-
-# Test a cross-contract refund (Item out of stock)
-npx nearhook trigger payment.refunded
-
-# Test a cross-chain intent settlement (Solana -> Bitcoin via NEAR)
-npx nearhook trigger intent.settled
+npx nearhook trigger --fixture fixtures/merchant-escrow/refund.json
 ```
 
 ### 3. Verify in Code (Next.js / Node.js)
 
 ```typescript
-import { verifyNearHookSignature } from '@nearhook/core';
+import { verifyWebhookSignature } from '@nearhook/core';
 
 export async function POST(req: Request) {
   const body = await req.text();
+  const payload = JSON.parse(body);
   const signature = req.headers.get('x-nearhook-signature')!;
   const timestamp = req.headers.get('x-nearhook-timestamp')!;
 
   // 1. Verify Ed25519 cryptographic signature with pinned public key
-  const isValid = verifyNearHookSignature({
-    payload: `${timestamp}.${body}`,
+  const verification = verifyWebhookSignature({
+    payload,
+    timestamp,
     signature,
-    publicKey: process.env.NEARHOOK_PUBLIC_KEY!
+    pinnedPublicKeyPemOrDer: process.env.NEARHOOK_PUBLIC_KEY!,
+    publicKeyHeader: req.headers.get('x-nearhook-pubkey') ?? undefined,
   });
 
-  if (!isValid) return new Response('Unauthorized', { status: 401 });
+  if (!verification.valid) return new Response('Unauthorized', { status: 401 });
 
-  const event = JSON.parse(body);
+  const event = payload;
 
   // 2. Settlement-Aware Decision Logic
   if (event.settlement.business_status === 'REFUNDED') {
