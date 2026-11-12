@@ -38,6 +38,15 @@ All vertices $V_T$ and constituent NEP-297 event logs are causally sorted using 
 $$(u, v) \in E_T \implies \text{index}(u) < \text{index}(v)$$
 Ensuring the delivered payload presents an immutable, sequential chronology of multi-shard execution.
 
+### 5. Why a DAG Model Instead of a Saga
+NearHook uses a DAG to represent the **observed on-chain execution**, rather than modeling each transaction as a Saga:
+- NEAR receipts form a runtime-defined dependency graph: a receipt may spawn multiple promises, callbacks may join results, and new dependencies appear as receipts execute.
+- Receipt outcomes can arrive out of order across shards. The DAG's spawned/executed sets let NearHook determine whether all known work has completed without assuming a fixed step order.
+- NearHook observes and reports protocol execution; it does not orchestrate business steps or issue compensating transactions. Saga semantics describe a business workflow and its compensation policy, which are not encoded by receipt causality and cannot establish whether a NEAR transaction settled or refunded.
+- A Saga could be built by an application on top of NearHook's settlement events. It is not a substitute for preserving the underlying receipt graph.
+
+The choice is about the layer being modeled, not mutually exclusive patterns: the DAG captures protocol-level causality and settlement; application services may use Sagas for longer-running business workflows.
+
 ## Quantified Metrics & Invariants
 | Metric | Value | Architectural Rationale |
 | :--- | :--- | :--- |

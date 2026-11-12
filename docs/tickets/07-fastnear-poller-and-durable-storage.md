@@ -1,7 +1,7 @@
 # Ticket 07: FastNEAR Hybrid Ingestion Poller, In-Memory Hot State, and Neon DB Durable Storage
 
 ## Overview
-Implement the production-grade ingestion and storage engine in `@nearhook/engine`. The engine consumes block and receipt outcomes from FastNEAR Neardata, stitches them in-flight using `@nearhook/core`, persists terminal states to Neon DB (PostgreSQL) as durable JSONB, manages an outbound HTTPS webhook dispatcher with exponential backoff and circuit breaking, and provides the pure domain logic for Two-Way Webhook (`yield_resume`) resumption.
+Implement the ingestion and storage engine in `@nearhook/engine`. The engine consumes block and receipt outcomes from FastNEAR Neardata, stitches them in-flight using `@nearhook/core`, persists terminal states to Neon DB (PostgreSQL) as durable JSONB, manages an outbound HTTPS webhook dispatcher with exponential backoff and circuit breaking, and provides the pure domain logic for Two-Way Webhook (`resume_action`) resumption.
 
 ---
 
@@ -18,10 +18,11 @@ Implement the production-grade ingestion and storage engine in `@nearhook/engine
      - `PostgresStorageAdapter`: Production driver executing raw SQL against Neon DB.
      - `MemoryStorageAdapter`: Zero-dependency, in-memory repository for 100% deterministic, offline unit testing.
 
-3. **Hybrid Ingestion Pipeline with Automated Gap Detection (ADR-010):**
-   - **Primary:** FastNEAR Neardata WebSocket feed for sub-second receipt outcome streaming.
-   - **Secondary & Backfill:** FastNEAR HTTP REST endpoint (`/v0/block_opt/{height}`).
-   - **Gap Invariant:** If received block $H_{\text{current}} > H_{\text{checkpoint}} + 1$ or socket drops, pause real-time ingestion, sequentially fetch missing block range $[H_{\text{checkpoint}} + 1 \dots H_{\text{current}} - 1]$ via HTTP, and resume push only once contiguous.
+3. **Contiguous FastNear HTTP Ingestion with Gap Recovery (ADR-010):**
+   - The current FastNear NEAR Data API exposes HTTP block reads, so the initial engine polls `/v0/last_block/optimistic` and fetches heights sequentially through `/v0/block_opt/{height}`.
+   - A contiguous checkpoint is committed only after each block is processed; a missing or invalid block leaves the checkpoint unchanged.
+   - WebSocket ingestion is deferred until FastNear publishes a supported Neardata feed. The block processor remains transport-independent.
+   - **Gap Invariant:** Process block heights in order and advance the checkpoint only after each block succeeds. On restart, resume from the last durable contiguous checkpoint.
 
 4. **Outbound Dispatcher with In-Process Delayed Retry & Circuit Breaker (ADR-002):**
    - Outbound HTTPS POST requests sign the payload using `@nearhook/core` Ed25519 relayer key ($M = \tau \parallel "." \parallel \text{JSON}$).
@@ -29,7 +30,7 @@ Implement the production-grade ingestion and storage engine in `@nearhook/engine
    - Circuit breaker: Subscription status automatically transitions to `PAUSED_UNHEALTHY` after 10 consecutive delivery failures (or >95% failures across 50 attempts).
 
 5. **Two-Way Relayer Domain Separation (Option B — Pure Domain Logic, Zero Mocks):**
-   - Core relayer logic is pure: Borsh/byte serialization of developer JSON responses (`{"approved": true}`), validation of `yield_token` and contract ID, and DB status transition (`AWAITING_WEBHOOK` -> `RESUMED`).
+   - Core relayer logic is pure: validate the stored yield and contract ID, encode the response as the JSON string expected by `resume_action(request_id, payload)`, and update the DB status (`AWAITING_WEBHOOK` -> `RESUMED`).
    - Unit tests exercise 100% real code paths with **zero mocking**.
    - Live transaction submission (`near-api-js` key signing and RPC broadcast) is isolated in a standalone broadcast driver executed only during live Testnet integration testing.
 
@@ -41,13 +42,13 @@ Implement the production-grade ingestion and storage engine in `@nearhook/engine
 flowchart TD
     subgraph S1["1. FastNEAR Ingestion Pipeline (ADR-010)"]
         direction TB
-        WS["FastNEAR Neardata WebSocket<br/>(Sub-second block & receipt stream)"]
+        HTTPPOLL["FastNear NEAR Data HTTP<br/>/v0/last_block/optimistic"]
         GAP{"Gap Detector<br/>H_received > H_checkpoint + 1?"}
         HTTP["FastNEAR HTTP Backfill<br/>/v0/block_opt/{height}"]
-        WS --> GAP
-        GAP -- "Gap Detected / Reconnect" --> HTTP
+        HTTPPOLL --> GAP
+        GAP -- "Fetch Every Missing Height" --> HTTP
         HTTP --> STITCH
-        GAP -- "Contiguous Block" --> STITCH
+        GAP -- "Contiguous Range Complete" --> STITCH
     end
 
     subgraph S2["2. In-Memory Hot Engine (Zero Redis)"]
@@ -85,7 +86,7 @@ flowchart TD
 
     subgraph S5["5. Hosted Two-Way Relayer (Option B)"]
         direction TB
-        PURE["Pure Resume Formatter<br/>(Borsh payload encoding, yield_token check)"]
+        PURE["Pure resume_action Formatter<br/>(JSON payload, yield validation)"]
         UPDATE["DB Status: RESUMED"]
         BROADCAST["Isolated NearRpcBroadcastDriver<br/>(near-api-js for live testnet)"]
         
@@ -101,6 +102,8 @@ flowchart TD
 ---
 
 ## Detailed Database Schema (`schema.sql`)
+
+The schema below is the original proposal. The implemented canonical schema, including network-scoped checkpoints, durable terminal DAGs, and atomic `RESUMING` claims, is [`packages/engine/src/storage/schema.sql`](../../packages/engine/src/storage/schema.sql).
 
 ```sql
 -- NearHook Engine Durable Storage Schema (Neon DB / PostgreSQL)
@@ -193,7 +196,7 @@ packages/engine/
 │   ├── ingestion/
 │   │   ├── gap-detector.ts          # Gap detection logic (H_current vs H_checkpoint)
 │   │   ├── backfill.ts              # Sequential HTTP block fetcher (/v0/block_opt/{height})
-│   │   └── stream.ts                # StreamWorker coordinating WebSocket push and HTTP backfill
+│   │   └── stream.ts                # Poller coordinating sequential block fetch and checkpointing
 │   ├── dispatcher/
 │   │   ├── queue.ts                 # Delayed retry queue with jittered exponential backoff
 │   │   └── circuit-breaker.ts       # Consecutive failure tracker and auto-trip logic
@@ -233,7 +236,7 @@ packages/engine/
 ### Task 4: Ingestion Pipeline with Gap Detection & HTTP Backfill
 - Implement `BlockGapDetector` in `packages/engine/src/ingestion/gap-detector.ts`.
 - Implement `HttpBlockBackfiller` in `packages/engine/src/ingestion/backfill.ts` fetching blocks sequentially.
-- Implement `IngestionStreamWorker` in `packages/engine/src/ingestion/stream.ts` orchestrating WebSocket push, pausing on gaps, executing backfills, and feeding receipts to `@nearhook/core` DAG stitcher.
+- Implement `IngestionStreamWorker` in `packages/engine/src/ingestion/stream.ts` polling contiguous HTTP block ranges and feeding receipts to `@nearhook/core` DAG stitcher.
 - Test gap detection and backfill in `packages/engine/test/gap-detector.test.ts`.
 
 ### Task 5: Outbound Dispatcher & Circuit Breaker
@@ -244,7 +247,7 @@ packages/engine/
 
 ### Task 6: Hosted Two-Way Relayer (Pure Domain Logic)
 - Implement `formatYieldResumeAction` and `processWebhookYieldApproval` in `packages/engine/src/relayer/yield-resume.ts`.
-- Encode developer JSON into valid Borsh payload bytes and update `two_way_yields` record.
+- Encode developer JSON into the `payload` string expected by the current `resume_action` contract method and update `two_way_yields` record.
 - Isolate `NearRpcBroadcastDriver` in `packages/engine/src/relayer/broadcast-driver.ts`.
 - Test pure relayer logic with 0 mocks in `packages/engine/test/relayer.test.ts`.
 
@@ -259,7 +262,7 @@ packages/engine/
    - Strict TypeScript compilation with zero errors (`pnpm --filter @nearhook/engine build`).
    - Zero `@ts-ignore` or `any` type casts.
 3. **Correctness Invariants Verified:**
-   - Checkpoint gap detection correctly identifies skipped blocks and halts push until backfill completes.
+   - Checkpoint gap detection identifies skipped heights and advances only after sequential fetch and processing succeeds.
    - Subscription wildcards (`*.merchant.near`) properly route incoming receipts.
    - Circuit breaker trips to `PAUSED_UNHEALTHY` precisely on the 10th consecutive delivery drop.
    - Two-Way Webhook developer responses serialize correctly into `yield_resume` action parameters.
