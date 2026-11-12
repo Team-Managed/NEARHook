@@ -37,7 +37,7 @@
 - [x] **Ticket 04: Ed25519 Attestation & Agent-Safe Mode Sanitizer** (Completed: `packages/core/src/crypto/attestation.ts`, `packages/core/src/crypto/verifier.ts`, `packages/core/src/agents/agent-safe.ts`, unit tests in `packages/core/test/crypto.test.ts` & `packages/core/test/agent-safe.test.ts`).
 - [ ] `Ticket 05`: Captured Receipt Replay & CLI Trigger Driver (after Ticket 09 Testnet trace capture).
 - [x] **Ticket 06: Developer CLI Tunnel Listener (`nearhook listen`)** (Completed: `packages/cli` implemented with `commander` & `ws`, supporting hosted relay with backoff reconnect, `--standalone` FastNEAR in-process DAG stitching, `--agent-safe` local quarantine, ASCII TUI visualizer, 10 passing tests in `packages/cli/test/listen.test.ts` & `tree.test.ts`).
-- [ ] `Ticket 07`: FastNEAR Ingestion Poller & Durable Storage.
+- [ ] `Ticket 07`: FastNEAR Ingestion Poller & Durable Storage (Specification & architecture finalized with Neon DB, in-memory hot store, hybrid gap backfill, and pure relayer separation).
 - [ ] `Ticket 08`: Temporal-Style Web Dashboard & SSE Live Stream.
 - [ ] `Ticket 09`: Reference Demo Smart Contracts (Merchant Escrow & Two-Way Yield) — both contracts and sandbox coverage implemented; complete verification and capture provenance-bearing Testnet receipt traces.
 - [ ] `Ticket 10`: NearHook Agent Skill Integration (`near/agent-skills`).
