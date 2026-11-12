@@ -20,7 +20,7 @@ NearHook provides a dedicated, settlement-aware hosted webhook gateway and nativ
 2. **Sub-Second Latency via Gas Refund Pruning:** Prunes pure system gas refunds (`predecessor_id == "system"` with a single `TransferAction`), shaving 1 full block roundtrip (~600ms) off delivery without sacrificing correctness.
 3. **Two-Way Webhooks via Native `yield_create` / `yield_resume`:** Enables smart contracts to pause their execution state on NEAR, emit a webhook to an external API, await the HTTP response, and resume execution with signed response data.
 4. **Agent-Safe Mode:** Shields AI agents (ElizaOS, LangChain) by quarantining free-form memos into an isolated `untrusted_metadata` block, dropping dust transactions below \$1.00, and enforcing rate limits.
-5. **Developer Tooling (The Stripe CLI for NEAR):** Zero-config local tunneling (`nearhook listen`) and instant zero-gas canned scenario testing (`nearhook trigger payment.refunded`).
+5. **Developer Tooling (The Stripe CLI for NEAR):** Zero-config local tunneling (`nearhook listen`) and offline replay of provenance-bearing receipt traces captured from the reference contracts (`nearhook trigger --fixture <path>`).
 6. **Cryptographically Attested Delivery:** Asymmetric Ed25519 relayer signatures over $M = \tau \parallel "." \parallel B$, client-side public key pinning, and event-ID idempotency deduplication.
 
 ---
@@ -29,7 +29,7 @@ NearHook provides a dedicated, settlement-aware hosted webhook gateway and nativ
 1. *As a Web3 merchant backend*, I want NearHook to follow cross-contract promise trees and verify terminal callback outcomes before dispatching, so that I never fulfill orders for payments that panicked and triggered an `ft_resolve_transfer` refund.
 2. *As an autonomous AI agent engineer*, I want NearHook to sanitize incoming transaction memos into an `untrusted_metadata` field and ignore dust payments, so that my agent is immune to prompt injection attacks and token exhaustion.
 3. *As a local developer*, I want to run `npx nearhook listen --account "merchant.near" --forward http://localhost:3000/api/webhook`, so that I can develop and test my webhook handlers locally without configuring ngrok, SSL certificates, or router NAT rules.
-4. *As a developer testing refund handling*, I want to run `npx nearhook trigger payment.refunded`, so that I can test my local webhook handler in 5 seconds without waiting for testnet faucets or deploying contracts.
+4. *As a developer testing refund handling*, I want to replay a receipt trace captured from the reference contract with `npx nearhook trigger --fixture <path>`, so that I can repeatedly test my local webhook handler without making a new Testnet transaction for every run.
 5. *As a smart contract developer*, I want my contract to call `yield_create` and have NearHook call my external API and resume the contract with `yield_resume`, so that my contract can await off-chain authorization.
 6. *As a security engineer*, I want to verify webhook signatures against a pinned NearHook relayer public key and reject duplicate `X-NearHook-Id` headers, so that my backend is protected against payload tampering and replay attacks.
 7. *As a developer debugging a failed local webhook*, I want to click "Replay" in the NearHook dashboard, so that the exact historical payload is immediately re-dispatched to my endpoint without requiring on-chain gas.
@@ -88,7 +88,7 @@ NearHook provides a dedicated, settlement-aware hosted webhook gateway and nativ
    - Pure function: `sanitizeForAgent(payload: WebhookPayload, config: AgentSafeConfig): AgentSafePayload | null`.
    - Tests: Prompt injection quarantine, dust transaction dropping, and typed schema validation.
 5. **Ed25519 Attestation & Verifier Seam:**
-   - Pure functions: `signPayload(payload, privateKey)` and `verifyNearHookSignature(options)`.
+   - Pure functions: `signPayload(payload, privateKey)` and `verifyWebhookSignature(options)`.
    - Tests: Valid signature verification, tampered payload rejection, expired timestamp rejection, and dynamic key forgery rejection.
 
 ---
