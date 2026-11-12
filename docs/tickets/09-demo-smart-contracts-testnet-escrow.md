@@ -5,6 +5,8 @@ Implement and package two lightweight reference smart contracts in `packages/con
 1. `merchant-escrow`: Standard NEP-141 receiver implementing `ft_on_transfer` to demonstrate multi-shard success vs. refund handling.
 2. `two-way-hook`: Native `yield_create` and `yield_resume` contract to demonstrate paused execution awaiting off-chain HTTP webhooks.
 
+Apply `.agents/skills/near-smart-contracts/SKILL.md` when creating, reviewing, testing, or deploying the Rust contracts. Scaffold each new contract with `cargo near new`; do not hand-create its Cargo manifest or initial Rust source. Run unit and sandbox integration tests before capturing Testnet traces.
+
 ## Requirements
 1. `packages/contracts/merchant-escrow`:
    - `ft_on_transfer(sender_id: string, amount: string, msg: string): string`
@@ -20,5 +22,7 @@ Implement and package two lightweight reference smart contracts in `packages/con
 ## Acceptance Criteria
 - Clean, auditable contracts with minimal gas consumption (<5 TGas for merchant escrow).
 - Clearly reproducible steps documented for calling via `near contract call-function as-transaction`.
+- Follow the installed NEAR smart-contract skill’s security, callback, and testing guidance.
 - Exercises the exact multi-shard receipt DAGs handled by `@nearhook/core` and `@nearhook/cli`.
+- Captures and records provenance-bearing Testnet receipt traces for merchant-escrow success and refund flows, as inputs to Ticket 05 replay fixtures.
 
