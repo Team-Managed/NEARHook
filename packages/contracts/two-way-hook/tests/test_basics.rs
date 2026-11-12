@@ -1,188 +1,162 @@
-use near_api::{AccountId, NearGas, NearToken};
-use near_sdk::serde_json::json;
-
-#[derive(near_sdk::serde::Deserialize)]
-#[serde(crate = "near_sdk::serde")]
-pub struct Bid {
-    pub bidder: AccountId,
-    pub bid: NearToken,
-}
-
-async fn test_basics_on(contract_wasm: Vec<u8>) -> testresult::TestResult<()> {
-    let sandbox = near_sandbox::Sandbox::start_sandbox().await?;
-    let sandbox_network =
-        near_api::NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
-
-    // Create accounts
-    let alice = create_subaccount(&sandbox, "alice.sandbox").await?;
-    let bob = create_subaccount(&sandbox, "bob.sandbox").await?;
-    let auctioneer = create_subaccount(&sandbox, "auctioneer.sandbox").await?;
-    let contract = create_subaccount(&sandbox, "contract.sandbox")
-        .await?
-        .as_contract();
-
-    // Deploy and initialize contract
-    let signer = near_api::Signer::from_secret_key(
-        near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY
-            .parse()
-            .unwrap(),
-    )?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)?
-        .as_secs();
-    let a_minute_from_now = (now + 60) * 1000000000;
-    near_api::Contract::deploy(contract.account_id().clone())
-        .use_code(contract_wasm)
-        .with_init_call(
-            "init",
-            json!({"end_time": a_minute_from_now.to_string(), "auctioneer": auctioneer.account_id()}),
-        )?
-        .with_signer(signer.clone())
-        .send_to(&sandbox_network)
-        .await?
-        .assert_success();
-
-    // Alice makes first bid
-    contract
-        .call_function("bid", ())
-        .transaction()
-        .deposit(NearToken::from_near(1))
-        .with_signer(alice.account_id().clone(), signer.clone())
-        .send_to(&sandbox_network)
-        .await?
-        .assert_success();
-
-    let highest_bid: Bid = contract
-        .call_function("get_highest_bid", ())
-        .read_only()
-        .fetch_from(&sandbox_network)
-        .await?
-        .data;
-    assert_eq!(highest_bid.bid, NearToken::from_near(1));
-    assert_eq!(&highest_bid.bidder, alice.account_id());
-
-    let alice_balance = alice
-        .tokens()
-        .near_balance()
-        .fetch_from(&sandbox_network)
-        .await?
-        .total;
-
-    // Bob makes a higher bid
-    contract
-        .call_function("bid", ())
-        .transaction()
-        .deposit(NearToken::from_near(2))
-        .with_signer(bob.account_id().clone(), signer.clone())
-        .send_to(&sandbox_network)
-        .await?
-        .assert_success();
-
-    let highest_bid: Bid = contract
-        .call_function("get_highest_bid", ())
-        .read_only()
-        .fetch_from(&sandbox_network)
-        .await?
-        .data;
-    assert_eq!(highest_bid.bid, NearToken::from_near(2));
-    assert_eq!(&highest_bid.bidder, bob.account_id());
-
-    // Check that Alice was refunded
-    let new_alice_balance = alice
-        .tokens()
-        .near_balance()
-        .fetch_from(&sandbox_network)
-        .await?
-        .total;
-
-    assert!(new_alice_balance == alice_balance.saturating_add(NearToken::from_near(1)));
-
-    // Alice tries to make a bid with less NEAR than the previous
-    contract
-        .call_function("bid", ())
-        .transaction()
-        .deposit(NearToken::from_near(1))
-        .with_signer(alice.account_id().clone(), signer.clone())
-        .send_to(&sandbox_network)
-        .await?
-        .assert_failure();
-
-    // Auctioneer claims auction but did not finish
-    contract
-        .call_function("claim", ())
-        .transaction()
-        .gas(NearGas::from_tgas(30))
-        .with_signer(auctioneer.account_id().clone(), signer.clone())
-        .send_to(&sandbox_network)
-        .await?
-        .assert_failure();
-
-    // Fast forward 200 blocks
-    let blocks_to_advance = 200;
-    sandbox.fast_forward(blocks_to_advance).await?;
-
-    // Auctioneer claims the auction
-    contract
-        .call_function("claim", ())
-        .transaction()
-        .gas(NearGas::from_tgas(30))
-        .with_signer(auctioneer.account_id().clone(), signer.clone())
-        .send_to(&sandbox_network)
-        .await?
-        .assert_success();
-
-    // Checks the auctioneer has the correct balance
-    let auctioneer_balance = auctioneer
-        .tokens()
-        .near_balance()
-        .fetch_from(&sandbox_network)
-        .await?
-        .total;
-    assert!(auctioneer_balance <= NearToken::from_near(12));
-    assert!(auctioneer_balance > NearToken::from_millinear(11990));
-
-    // Auctioneer tries to claim the auction again
-    contract
-        .call_function("claim", ())
-        .transaction()
-        .gas(NearGas::from_tgas(30))
-        .with_signer(auctioneer.account_id().clone(), signer.clone())
-        .send_to(&sandbox_network)
-        .await?
-        .assert_failure();
-
-    // Alice tries to make a bid when the auction is over
-    contract
-        .call_function("bid", ())
-        .transaction()
-        .deposit(NearToken::from_near(1))
-        .with_signer(alice.account_id().clone(), signer.clone())
-        .send_to(&sandbox_network)
-        .await?
-        .assert_failure();
-
-    Ok(())
-}
+use near_api::{AccountId, Contract, NearToken, NetworkConfig, Signer};
+use near_sdk::serde_json::{Value, json};
+use std::time::Duration;
 
 async fn create_subaccount(
     sandbox: &near_sandbox::Sandbox,
     name: &str,
 ) -> testresult::TestResult<near_api::Account> {
-    let account_id: AccountId = name.parse().unwrap();
+    let account_id: AccountId = name.parse()?;
     sandbox
-        .create_account(account_id.clone().as_str().parse()?)
+        .create_account(account_id.clone())
         .initial_balance(NearToken::from_near(10))
         .send()
         .await?;
     Ok(near_api::Account(account_id))
 }
 
+async fn deploy(
+) -> testresult::TestResult<(
+    near_sandbox::Sandbox,
+    NetworkConfig,
+    Contract,
+    Signer,
+    near_api::Account,
+    near_api::Account,
+)> {
+    let sandbox = near_sandbox::Sandbox::start_sandbox().await?;
+    let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
+    let owner = create_subaccount(&sandbox, "owner.sandbox").await?;
+    let responder = create_subaccount(&sandbox, "responder.sandbox").await?;
+    let caller = create_subaccount(&sandbox, "caller.sandbox").await?;
+    let contract = create_subaccount(&sandbox, "hook.sandbox")
+        .await?
+        .as_contract();
+    let signer = Signer::from_secret_key(
+        near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.parse()?,
+    )?;
 
-#[tokio::test]
-async fn test_contract_is_operational() -> testresult::TestResult<()> {
-    let contract_wasm_path = cargo_near_build::build_with_cli(Default::default())?;
-    let contract_wasm = std::fs::read(contract_wasm_path)?;
+    let wasm_path = cargo_near_build::build_with_cli(Default::default())?;
+    let wasm = std::fs::read(wasm_path)?;
+    Contract::deploy(contract.account_id().clone())
+        .use_code(wasm)
+        .with_init_call(
+            "new",
+            json!({
+                "owner_id": owner.account_id(),
+                "responder_id": responder.account_id(),
+            }),
+        )?
+        .with_signer(signer.clone())
+        .send_to(&network)
+        .await?
+        .assert_success();
 
-    test_basics_on(contract_wasm).await
+    Ok((sandbox, network, contract, signer, owner, caller))
 }
 
+async fn wait_for_pending_action(
+    contract: &Contract,
+    network: &NetworkConfig,
+    request_id: u64,
+) -> testresult::TestResult<Value> {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let pending: Option<Value> = contract
+                .call_function("get_pending_action", json!({ "request_id": request_id }))
+                .read_only()
+                .fetch_from(network)
+                .await?
+                .data;
+            if let Some(pending) = pending {
+                return Ok(pending);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn authorized_responder_resumes_yield_and_callback_clears_state()
+-> testresult::TestResult<()> {
+    let (sandbox, network, contract, signer, _owner, caller) = deploy().await?;
+    let pending_call = contract
+        .call_function("request_action", json!({ "action_id": "approve-order-1" }))
+        .transaction()
+        .deposit(NearToken::from_millinear(100))
+        .with_signer(caller.account_id().clone(), signer.clone());
+    let pending_network = network.clone();
+    let pending_task = tokio::spawn(async move { pending_call.send_to(&pending_network).await });
+
+    let pending = wait_for_pending_action(&contract, &network, 0).await?;
+    assert_eq!(pending["action_id"], "approve-order-1");
+    assert!(pending["yield_id"].is_string());
+
+    contract
+        .call_function(
+            "resume_action",
+            json!({ "request_id": 0, "payload": "{\"approved\":true}" }),
+        )
+        .transaction()
+        .with_signer(caller.account_id().clone(), signer.clone())
+        .send_to(&network)
+        .await?
+        .assert_failure();
+
+    contract
+        .call_function(
+            "resume_action",
+            json!({ "request_id": 0, "payload": "{\"approved\":true}" }),
+        )
+        .transaction()
+        .with_signer(
+            "responder.sandbox".parse()?,
+            Signer::from_secret_key(
+                near_sandbox::config::DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.parse()?,
+            )?,
+        )
+        .send_to(&network)
+        .await?
+        .assert_success();
+
+    tokio::time::timeout(Duration::from_secs(30), pending_task).await???;
+    let pending_after: Option<Value> = contract
+        .call_function("get_pending_action", json!({ "request_id": 0 }))
+        .read_only()
+        .fetch_from(&network)
+        .await?
+        .data;
+    assert!(pending_after.is_none());
+
+    drop(sandbox);
+    Ok(())
+}
+
+#[tokio::test]
+async fn timed_out_yield_clears_pending_state()
+-> testresult::TestResult<()> {
+    let (sandbox, network, contract, signer, _owner, caller) = deploy().await?;
+    let pending_call = contract
+        .call_function("request_action", json!({ "action_id": "wait-for-timeout" }))
+        .transaction()
+        .deposit(NearToken::from_millinear(100))
+        .with_signer(caller.account_id().clone(), signer);
+    let pending_network = network.clone();
+    let pending_task = tokio::spawn(async move { pending_call.send_to(&pending_network).await });
+
+    let pending = wait_for_pending_action(&contract, &network, 0).await?;
+    assert_eq!(pending["action_id"], "wait-for-timeout");
+    sandbox.fast_forward(210).await?;
+    tokio::time::timeout(Duration::from_secs(30), pending_task).await???;
+
+    let pending_after: Option<Value> = contract
+        .call_function("get_pending_action", json!({ "request_id": 0 }))
+        .read_only()
+        .fetch_from(&network)
+        .await?
+        .data;
+    assert!(pending_after.is_none());
+    drop(sandbox);
+    Ok(())
+}
