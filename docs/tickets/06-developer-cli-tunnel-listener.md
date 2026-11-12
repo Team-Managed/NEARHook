@@ -1,6 +1,6 @@
 # Ticket 06: Developer CLI Tunnel Listener (`nearhook listen`)
 
-**Status:** In Progress  
+**Status:** Completed  
 **Monorepo Package:** `packages/cli`  
 **Dependencies:** `@nearhook/core` (workspace), `commander`, `ws`, `@types/ws`  
 
