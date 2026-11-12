@@ -175,8 +175,10 @@ export const AgentSafePayloadSchema = z.object({
     recipient: z.string(),
     token: z.string(),
     amount: z.string(),
+    destination_address: z.string().optional(),
   }),
   settlement: SettlementResolutionSchema,
+  omnichain: OmnichainRouteSchema.optional(),
   untrusted_metadata: z.object({
     memo: z.string().nullable().optional(),
     // Kept for compatibility with the original ADR-005 schema.
