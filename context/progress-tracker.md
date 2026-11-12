@@ -36,7 +36,7 @@
 - [x] **Ticket 03: Settlement Adapters & Omnichain DIP-4 Parser** (Completed: `packages/core/src/adapters/nep141.ts`, `packages/core/src/adapters/dip4.ts`, `packages/core/src/evaluator/settlement.ts`, unit tests in `packages/core/test/settlement.test.ts`).
 - [x] **Ticket 04: Ed25519 Attestation & Agent-Safe Mode Sanitizer** (Completed: `packages/core/src/crypto/attestation.ts`, `packages/core/src/crypto/verifier.ts`, `packages/core/src/agents/agent-safe.ts`, unit tests in `packages/core/test/crypto.test.ts` & `packages/core/test/agent-safe.test.ts`).
 - [ ] `Ticket 05`: Captured Receipt Replay & CLI Trigger Driver (after Ticket 09 Testnet trace capture).
-- [ ] **Ticket 06: Developer CLI Tunnel Listener (`nearhook listen`)** (In Progress: Design specification approved in `docs/superpowers/specs/2026-11-12-developer-cli-tunnel-listener-design.md`).
+- [ ] **Ticket 06: Developer CLI Tunnel Listener (`nearhook listen`)** (In Progress: Full specification documented in `docs/tickets/06-developer-cli-tunnel-listener.md`).
 - [ ] `Ticket 07`: FastNEAR Ingestion Poller & Durable Storage.
 - [ ] `Ticket 08`: Temporal-Style Web Dashboard & SSE Live Stream.
 - [ ] `Ticket 09`: Reference Demo Smart Contracts (Merchant Escrow & Two-Way Yield) — both contracts and sandbox coverage implemented; complete verification and capture provenance-bearing Testnet receipt traces.
