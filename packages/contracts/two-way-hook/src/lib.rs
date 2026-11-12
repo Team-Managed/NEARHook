@@ -44,13 +44,13 @@ pub struct Contract {
 #[near]
 impl Contract {
     #[init]
-    pub fn new(responder_id: AccountId) -> Self {
+    pub fn new(owner_id: AccountId, responder_id: AccountId) -> Self {
         require!(
             responder_id != env::current_account_id(),
             "Responder must differ from the contract account"
         );
         Self {
-            owner_id: env::predecessor_account_id(),
+            owner_id,
             responder_id,
             next_request_id: 0,
             pending_actions: LookupMap::new(StorageKey::PendingActions),
