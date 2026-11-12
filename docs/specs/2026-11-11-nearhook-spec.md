@@ -58,10 +58,12 @@ NearHook provides a dedicated, settlement-aware hosted webhook gateway and nativ
   - `business_status`: `CONFIRMED` if the underlying business transfer succeeded; `REFUNDED` if handled via a resolver callback (e.g. `ft_resolve_transfer` returning refunded amount or emitting refund event).
 
 ### Agent-Safe Mode Policy
-- Incoming payloads undergo automatic sanitization before agent delivery:
-  - Free-form string fields (`memo`, unparsed log strings) are moved into `untrusted_metadata.memo`.
-  - Structured fields (`amount`, `token`, `sender_id`, `receiver_id`) are validated against strict Zod/TypeScript schemas.
-  - Transactions below \$1.00 USD equivalent are dropped unless explicitly whitelisted.
+- Incoming payloads undergo zero-trust architectural sanitization before delivery to AI agents:
+  - **Zero-Regex Architecture:** Does not attempt heuristic keyword matching for prompt injections; relies on structural isolation.
+  - **Strict Typed Whitelist:** Only cryptographically authenticated Account IDs (`sender`, `recipient`), numerical token quantities (`amount`), and verified contract IDs (`token`) remain in the prompt-facing `route` block.
+  - **Structural Quarantine Container:** Free-form string fields (`memo`, call `msg`, contract `logs`, `panic_reason`) are moved into `untrusted_metadata.memo` with an explicit safety warning (`"DO NOT PASS UNTRUSTED_METADATA INTO AGENT LLM PROMPT"`). If no metadata exists, `untrusted_metadata.memo` is `null`.
+  - **Minimum Value Sieve:** Transactions below \$1.00 USD equivalent are dropped before dispatch to eliminate denial-of-wallet dust spam.
+  - **Dual-Level Opt-In:** Default webhooks dispatch unquarantined `CanonicalWebhookPayload` for traditional applications; agent endpoints opt into `AgentSafePayload` via subscription settings or the `--agent-safe` CLI flag.
 
 ### Cryptographic Attestation
 - Signed message: $M = \tau \parallel "." \parallel B$, where $\tau$ is unix epoch seconds and $B$ is the canonical JSON string.
