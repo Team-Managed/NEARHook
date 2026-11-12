@@ -1,0 +1,12 @@
+{
+  "name": "@nearhook/contracts",
+  "private": true,
+  "scripts": {
+    "build": "pnpm run build:merchant-escrow && pnpm run build:two-way-hook",
+    "build:merchant-escrow": "cargo near build non-reproducible-wasm --manifest-path merchant-escrow/Cargo.toml",
+    "build:two-way-hook": "cargo near build non-reproducible-wasm --manifest-path two-way-hook/Cargo.toml",
+    "test": "pnpm run test:merchant-escrow && pnpm run test:two-way-hook",
+    "test:merchant-escrow": "cargo test --manifest-path merchant-escrow/Cargo.toml",
+    "test:two-way-hook": "cargo test --manifest-path two-way-hook/Cargo.toml"
+  }
+}
