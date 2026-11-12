@@ -17,17 +17,61 @@ We implement a **Checkpointed Ingestion Worker with Two-Tier Storage**:
    - Detects block gaps ($H_{\text{current}} > H_{\text{last}} + 1$) and fetches missing block heights contiguously.
    - Atomically persists the highest contiguous processed block height ($H_{\text{checkpoint}}$) in durable storage.
 
-2. **Hot Ephemeral Store (Redis, 120s Configurable TTL):**
-   - Buffers in-flight receipts and tracks DAG dependencies:
-     - `nearhook:tx:{hash}:tracker`: Stores discovered receipt IDs, execution statuses, and pending callbacks.
-     - `nearhook:tx:{hash}:nodes`: Hash mapping `ReceiptId` to serialized `ExecutionOutcomeNode`.
-   - Evaluates terminal resolution against contiguous block checkpoints.
-   - Cleans up upon terminal delivery handoff.
+2. **Hot Ephemeral Store (Redis vs In-Process Memory):**
+   - **Hosted Production Gateway (`@nearhook/engine`):**
+     - Managed Redis / Upstash Serverless Redis for distributed multi-worker atomic state.
+     - Ephemeral keys with strict TTLs:
+       - `nearhook:checkpoint:height`: Persistent string storing the latest contiguous block height.
+       - `nearhook:tx:{hash}:tracker`: Hash storing `root_registered` boolean, `spawned_receipt_ids` set, and `executed_receipt_ids` set (TTL: 120s).
+       - `nearhook:tx:{hash}:nodes`: Hash mapping `ReceiptId -> JSON(ExecutionOutcomeNode)` (TTL: 120s).
+       - `nearhook:tunnel:{session_id}:buffer`: Circular ring-buffer of unacknowledged delivery events for local CLI reconnect replay (TTL: 300s).
+   - **Local Developer CLI (`@nearhook/cli`):**
+     - Zero-dependency in-process RAM heap (`Map<ReceiptId, ExecutionOutcomeNode>` inside Node.js).
+     - Local developers running `nearhook listen` or `nearhook trigger` require **zero local Redis installation or Docker setup**.
+   - **Handoff to Durable Store:**
+     - The millisecond $|S_{\text{spawned}} \setminus S_{\text{executed}}| = 0$ evaluates to true, the stitched canonical payload is dispatched and committed to PostgreSQL (`deliveries` table). The ephemeral Redis keys expire or are pruned, guaranteeing zero RAM leakage.
 
 3. **Durable Store (PostgreSQL / NeonDB):**
-   - `subscriptions`: User wildcard rules (`*.near`, `intents.near`), chain filters (`SOLANA`, `BITCOIN`), endpoint URLs.
-   - `deliveries`: Stitched canonical JSON payloads (`payload` JSONB column), HTTP delivery status codes, latency measurements, and retry counts.
-   - Circuit breaker state (`ACTIVE`, `PAUSED_UNHEALTHY`).
+   PostgreSQL serves as the ACID-compliant, long-term state and replay archive. It stores 3 core tables:
+
+   - **`subscriptions` Table (Routing & Filter Rules):**
+     | Column | Type | Purpose |
+     | :--- | :--- | :--- |
+     | `id` | `VARCHAR(64) PRIMARY KEY` | Prefixed unique ID (`sub_...`). |
+     | `account_id` | `TEXT NOT NULL` | Target NEAR account or wildcard pattern (`*.app.near`). |
+     | `event_types` | `TEXT[]` | Filtered events (`['payment.settled', 'intent.settled']`). |
+     | `chain_filter` | `TEXT[]` | Omnichain filters (`['SOLANA', 'BITCOIN', 'NEAR']`). |
+     | `destination_url` | `TEXT NOT NULL` | HTTPS endpoint where webhooks are delivered. |
+     | `agent_safe` | `BOOLEAN DEFAULT FALSE` | Enforces prompt-injection quarantine & $1.00 dust sieve. |
+     | `status` | `ENUM` | Subscription health (`ACTIVE`, `PAUSED_MANUAL`, `PAUSED_UNHEALTHY`). |
+     | `consecutive_failures` | `INT DEFAULT 0` | Failure counter; trips circuit breaker at 10 consecutive drops. |
+     | `created_at` / `updated_at` | `TIMESTAMPTZ` | Timestamp audit trails. |
+
+   - **`deliveries` Table (Immutable Audit Ledger & 1-Click Replay):**
+     | Column | Type | Purpose |
+     | :--- | :--- | :--- |
+     | `id` | `VARCHAR(64) PRIMARY KEY` | Event delivery ID (`evt_...`). |
+     | `subscription_id` | `VARCHAR(64) REFERENCES subscriptions` | Foreign key to matching subscription. |
+     | `tx_hash` | `VARCHAR(64) NOT NULL INDEXED` | NEAR transaction hash for zero-explorer debugging. |
+     | `block_height` | `BIGINT NOT NULL` | Block height where final settlement resolved. |
+     | `protocol_status` | `VARCHAR(16) NOT NULL` | `SUCCESS` vs `FAILURE`. |
+     | `business_status` | `VARCHAR(32) NOT NULL` | `CONFIRMED`, `REFUNDED`, `PARTIALLY_REFUNDED`, or `FAILED`. |
+     | `payload` | `JSONB NOT NULL` | Complete canonical stitched payload (used for instant 1-click free replay). |
+     | `http_status` | `SMALLINT` | Downstream server HTTP response code (e.g. 200, 500, 404). |
+     | `attempt_count` | `SMALLINT DEFAULT 1` | Retry attempt tracker (1 to 5). |
+     | `latency_ms` | `INT` | End-to-end HTTP delivery latency in milliseconds. |
+     | `response_body` | `TEXT` | Downstream server response (records Two-Way approval payload or error log). |
+     | `delivered_at` | `TIMESTAMPTZ` | Timestamp when downstream endpoint acknowledged 200 OK. |
+
+   - **`two_way_yields` Table (Yield & Resume Execution Tracker):**
+     | Column | Type | Purpose |
+     | :--- | :--- | :--- |
+     | `yield_token` | `VARCHAR(128) PRIMARY KEY` | Cryptographic token generated by `yield_create`. |
+     | `tx_hash` | `VARCHAR(64) NOT NULL` | Transaction hash that initiated the pause. |
+     | `contract_id` | `TEXT NOT NULL` | Contract account waiting for external resume. |
+     | `status` | `ENUM` | Execution state (`AWAITING_WEBHOOK`, `RESUMED`, `EXPIRED`). |
+     | `resume_tx_hash` | `VARCHAR(64)` | On-chain transaction hash of NearHook's `yield_resume` call. |
+     | `expires_at_block` | `BIGINT` | Protocol ceiling block height (created height + 200 blocks). |
 
 ## Quantified Numbers & Storage Parameters
 | Parameter | Value | Specification Details |
