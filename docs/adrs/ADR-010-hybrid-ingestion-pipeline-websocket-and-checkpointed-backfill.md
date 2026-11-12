@@ -26,3 +26,7 @@ Implement a **Hybrid Ingestion Pipeline** combining real-time push with resilien
 - **Positive:** Absolute zero data-loss guarantee during socket reconnects or transient network partitions.
 - **Negative:** Requires managing both WebSocket client lifecycle and HTTP fallback fetching logic.
 
+## Implementation Note (Ticket 07)
+
+FastNear's current NEAR Data API documents optimistic block reads over HTTP and does not expose a WebSocket feed. Ticket 07 therefore implements sequential HTTP polling with contiguous checkpointing and gap recovery. WebSocket ingestion remains deferred until the provider publishes a supported feed; the block processing interface is transport-independent.
+
