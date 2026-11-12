@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "skills": {
+    "near-smart-contracts": {
+      "source": "near/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/near-smart-contracts/SKILL.md",
+      "computedHash": "a920325e87aae4da844a3678543bd350779c8fc70d376b59feccd61c1f191fa8"
+    }
+  }
+}
